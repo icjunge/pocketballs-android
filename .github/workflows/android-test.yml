@@ -1,0 +1,35 @@
+name: Build Android test APK
+on:
+  workflow_dispatch:
+  push:
+    paths: ['app/**', 'tools/**', 'validation/**', '.github/workflows/android-test.yml']
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: JavaScript syntax
+        run: for source in app/src/main/assets/*.js; do node --check "$source"; done
+      - name: Gravity mapping tests
+        run: |
+          mkdir -p build/gravity-test
+          javac -d build/gravity-test app/src/main/java/com/idleballs/pocket/GravityMapper.java validation/GravityMapperTest.java
+          java -cp build/gravity-test com.idleballs.pocket.GravityMapperTest
+      - name: Restore verified official Android tools
+        run: python3 tools/restore-android-sdk.py "$RUNNER_TEMP/pocket-sdk"
+      - name: Compile and align APK
+        env:
+          POCKETBALLS_ANDROID_SDK: ${{ runner.temp }}/pocket-sdk
+        run: bash tools/build-android.sh "$GITHUB_WORKSPACE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketBalls-build-input
+          path: dist/
+          retention-days: 7
