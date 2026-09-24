@@ -4,3 +4,8 @@ local-signing/
 local.properties
 .gradle/
 app/build/
+ios/build/
+ios/DerivedData/
+ios/**/xcuserdata/
+*.xcuserstate
+.DS_Store

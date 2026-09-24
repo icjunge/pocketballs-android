@@ -1,5 +1,7 @@
 # 球屿 · Pocket Balls 0.1.1
 
+现已包含 iOS 真机测试工程。Mac 上打开 `ios/PocketBalls.xcodeproj`，选择自己的 Personal Team 和连接的 iPhone 即可构建安装；详细步骤见 [iOS 真机测试说明](ios/README.md)。两个平台复用同一份场景、美术和物理资源。
+
 面向三星 Galaxy Z Fold7 的小球测试应用，Android 8.0+，target SDK 35。小球场景可完全离线运行，检查和下载更新需要网络。
 
 - 原生姿态/重力驱动物理：哪边低往哪边滚，支持横竖屏坐标转换。优先使用融合陀螺仪的游戏旋转矢量，后台线程请求 120 Hz 采样，画面每帧使用最新值；无额外场景重力平滑。

@@ -1,0 +1,63 @@
+name: Build and check iOS project
+on:
+  workflow_dispatch:
+  push:
+    paths: ['ios/**', 'app/src/main/assets/**', 'validation/scene-timing.test.cjs', '.github/workflows/ios-test.yml']
+permissions:
+  contents: read
+jobs:
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select installed Xcode and record SDKs
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios-validation
+          if [ -d /Applications/Xcode_27.app/Contents/Developer ]; then
+            sudo xcode-select -s /Applications/Xcode_27.app/Contents/Developer
+          elif [ -d /Applications/Xcode_27.0.app/Contents/Developer ]; then
+            sudo xcode-select -s /Applications/Xcode_27.0.app/Contents/Developer
+          fi
+          xcodebuild -version | tee build/ios-validation/xcode-version.txt
+          xcodebuild -showsdks | tee build/ios-validation/sdks.txt
+      - name: Check motion mapping and shared physics
+        run: |
+          set -euo pipefail
+          for source in app/src/main/assets/*.js; do node --check "$source"; done
+          node validation/scene-timing.test.cjs
+          swiftc ios/PocketBalls/MotionGravity.swift ios/Tests/MotionGravityChecks.swift -o "$RUNNER_TEMP/pocket-motion-checks"
+          "$RUNNER_TEMP/pocket-motion-checks"
+          plutil -lint ios/PocketBalls/Info.plist ios/PocketBalls/PrivacyInfo.xcprivacy ios/PocketBalls.xcodeproj/project.pbxproj
+      - name: Compile for iPhone without distribution signing
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/PocketBalls.xcodeproj -scheme PocketBalls -configuration Debug -destination 'generic/platform=iOS' -derivedDataPath build/ios-device CODE_SIGNING_ALLOWED=NO build > build/ios-validation/device-build.log 2>&1 || { tail -120 build/ios-validation/device-build.log; exit 1; }
+          test -f build/ios-device/Build/Products/Debug-iphoneos/PocketBalls.app/assets/index.html
+          cmp app/src/main/assets/android-scene.js build/ios-device/Build/Products/Debug-iphoneos/PocketBalls.app/assets/android-scene.js
+      - name: Compile for simulator
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/PocketBalls.xcodeproj -scheme PocketBalls -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios-simulator CODE_SIGNING_ALLOWED=NO build > build/ios-validation/simulator-build.log 2>&1 || { tail -120 build/ios-validation/simulator-build.log; exit 1; }
+      - name: Launch scene on iPhone simulator
+        run: python3 ios/tools/simulator-smoke.py build/ios-simulator/Build/Products/Debug-iphonesimulator/PocketBalls.app build/ios-validation
+      - name: Package Xcode source for local Personal Team signing
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          paths = [Path('ios'), Path('app/src/main/assets'), Path('THIRD_PARTY_NOTICES.md')]
+          with ZipFile('build/ios-validation/PocketBalls-iOS-Xcode.zip', 'w', ZIP_DEFLATED) as bundle:
+              for path in paths:
+                  for file in sorted(path.rglob('*')) if path.is_dir() else [path]:
+                      if file.is_file() and not any(part in ('xcuserdata', '__pycache__', '.DS_Store') for part in file.parts):
+                          bundle.write(file, Path('PocketBalls-iOS') / file)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: PocketBalls-iOS-validation-and-source
+          path: build/ios-validation/
+          retention-days: 7
+          if-no-files-found: error

@@ -40,7 +40,7 @@ function advancePocketPhysics(dynamics,balls,gravity,elapsed) {
   function nativeCall(method,...args){try{return bridge&&typeof bridge[method]==='function'?bridge[method](...args):null;}catch(e){return null;}}
   if(typeof THREE==='undefined'){loading.textContent='3D 资源未加载，请重新打开应用';return;}
   let renderer;
-  try{renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false,powerPreference:'high-performance'});}catch(e){loading.textContent='3D 画面暂时无法启动，请更新 Android System WebView 后重试';return;}
+  try{renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false,powerPreference:'high-performance'});}catch(e){loading.textContent='3D 画面暂时无法启动，请关闭应用后重试';return;}
   renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.12;
   renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
   const scene=new THREE.Scene();scene.background=new THREE.Color(0xf1eee7);
