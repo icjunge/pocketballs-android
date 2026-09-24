@@ -25,6 +25,7 @@ jobs:
           java -cp build/host-tests com.idleballs.pocket.RotationGravityTest
           java -cp build/host-tests com.idleballs.pocket.UpdatePolicyTest
           node validation/scene-timing.test.cjs
+          node validation/play-physics.test.cjs
       - name: Restore verified official Android tools
         run: python3 tools/restore-android-sdk.py "$RUNNER_TEMP/pocket-sdk"
       - name: Compile and align APK

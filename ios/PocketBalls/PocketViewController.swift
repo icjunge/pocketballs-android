@@ -23,22 +23,8 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
     private static let maximumStateBytes = 512 * 1024
     private let defaults = UserDefaults.standard
     private let motionManager = CMMotionManager()
-    private let motionQueue: OperationQueue = {
-        let queue = OperationQueue()
-        queue.name = "PocketMotion"
-        queue.qualityOfService = .userInteractive
-        queue.maxConcurrentOperationCount = 1
-        return queue
-    }()
-    private let sampleLock = NSLock()
-    private struct Sample {
-        let x: Double, y: Double, z: Double
-        let sequence: UInt64
-    }
-    // Only these three fields are touched by the motion queue, under sampleLock.
-    private var latestSample: Sample?
-    private var sampleSequence: UInt64 = 0
-    private var motionGeneration: UInt64 = 0
+    private let feedback = PocketFeedback()
+    private let updater = PocketUpdateChecker()
 
     private var webView: WKWebView?
     private var displayLink: CADisplayLink?
@@ -48,8 +34,9 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
     private var sensorUsable = false
     private var gravityInFlight = false
     private var bridgeGeneration: UInt64 = 0
-    private var lastDeliveredSequence: UInt64?
+    private var lastDeliveredTimestamp: TimeInterval?
     private var lastDeliveredOrientation: PocketScreenOrientation?
+    private var lastBridgeRoundTripMs: Double = 0
     private var rendererRecoveries = 0
     private var saveTask: UIBackgroundTaskIdentifier = .invalid
 
@@ -61,6 +48,7 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
         super.viewDidLoad()
         view.backgroundColor = UIColor(red: 241/255, green: 238/255, blue: 231/255, alpha: 1)
         sensorUsable = motionManager.isDeviceMotionAvailable
+        updater.onStatus = { [weak self] status in self?.callScene("onUpdateStatus", [status]) }
         createWebView()
     }
 
@@ -90,6 +78,7 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
         loadViewIfNeeded()
         guard sceneActive != active else { return }
         sceneActive = active
+        feedback.setActive(active)
         bridgeGeneration &+= 1
         gravityInFlight = false
         if active {
@@ -118,7 +107,7 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
         webReady = false
         bridgeGeneration &+= 1
         gravityInFlight = false
-        lastDeliveredSequence = nil
+        lastDeliveredTimestamp = nil
         lastDeliveredOrientation = nil
         displayLink?.invalidate()
         displayLink = nil
@@ -158,7 +147,7 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
         let stored = defaults.string(forKey: Self.stateKey) ?? ""
         let seed: [String: Any] = [
             "state": validState(stored) ? stored : "",
-            "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.1",
+            "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.0",
             "sensorAvailable": motionManager.isDeviceMotionAvailable
         ]
         let seedJSON = Self.json(seed) ?? "{}"
@@ -177,8 +166,22 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
             },
             ready: () => post('ready', null),
             versionName: () => seed.version,
+            platform: () => 'ios',
             isSensorAvailable: () => !!seed.sensorAvailable,
-            sensorType: () => seed.sensorAvailable ? 'core_motion' : 'unavailable'
+            sensorType: () => seed.sensorAvailable ? 'core_motion' : 'unavailable',
+            playFeedback: (type, strength, sound, haptics) => {
+              if (typeof type !== 'string' || !Number.isFinite(strength)) return;
+              post('playFeedback', {type, strength, sound: sound === true, haptics: haptics === true, sentAt: Date.now()});
+            },
+            setFeedbackState: (active, sound, haptics) => post('setFeedbackState', {
+              active: active === true, sound: sound === true, haptics: haptics === true
+            }),
+            checkForUpdates: () => post('checkForUpdates', null),
+            downloadUpdate: () => post('updateInstructions', null),
+            installUpdate: () => post('updateInstructions', null),
+            copyDiagnostics: value => {
+              if (typeof value === 'string' && value.length <= 8192) post('copyDiagnostics', value);
+            }
           }), writable: false, configurable: false});
           document.addEventListener('DOMContentLoaded', () => {
             const style = document.createElement('style');
@@ -218,6 +221,7 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
             callScene("onVisibility", [sceneActive])
             startDisplayLinkIfReady()
             deliverGravity()
+            updater.sceneReady()
         case "saveState":
             if let state = payload["value"] as? String, validState(state) {
                 defaults.set(state, forKey: Self.stateKey)
@@ -227,6 +231,29 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
                 userContentController.removeAllUserScripts()
                 userContentController.addUserScript(WKUserScript(source: bridgeScript(),
                     injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            }
+        case "playFeedback":
+            if sceneActive, let value = payload["value"] as? [String: Any],
+               let type = value["type"] as? String, let strength = value["strength"] as? Double,
+               let sentAt = value["sentAt"] as? Double, sentAt.isFinite,
+               (-20.0...150.0).contains(Date().timeIntervalSince1970 * 1000 - sentAt) {
+                feedback.play(type: type, strength: strength,
+                              sound: value["sound"] as? Bool == true,
+                              haptics: value["haptics"] as? Bool == true)
+            }
+        case "setFeedbackState":
+            if let value = payload["value"] as? [String: Any] {
+                feedback.setPreferences(active: value["active"] as? Bool == true,
+                                        sound: value["sound"] as? Bool == true,
+                                        haptics: value["haptics"] as? Bool == true)
+            }
+        case "checkForUpdates":
+            updater.check()
+        case "updateInstructions":
+            showUpdateInstructions()
+        case "copyDiagnostics":
+            if sceneActive, let value = payload["value"] as? String, value.utf16.count <= 8192 {
+                UIPasteboard.general.string = value
             }
         #if DEBUG
         case "debugError":
@@ -251,49 +278,20 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
         guard !motionRunning else { return }
         sensorUsable = motionManager.isDeviceMotionAvailable
         guard sensorUsable else { return } // Simulator retains the scene's demo mode.
-        sampleLock.lock()
-        latestSample = nil
-        motionGeneration &+= 1
-        let generation = motionGeneration
-        sampleLock.unlock()
-        lastDeliveredSequence = nil
+        lastDeliveredTimestamp = nil
         lastDeliveredOrientation = nil
+        lastBridgeRoundTripMs = 0
         motionRunning = true
         motionManager.deviceMotionUpdateInterval = 1.0 / 120.0
-        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: motionQueue) { [weak self] motion, error in
-            guard let self = self else { return }
-            if let motion = motion {
-                let gravity = motion.gravity
-                guard gravity.x.isFinite, gravity.y.isFinite, gravity.z.isFinite else { return }
-                self.sampleLock.lock()
-                if self.motionGeneration == generation {
-                    self.sampleSequence &+= 1
-                    self.latestSample = Sample(x: gravity.x, y: gravity.y, z: gravity.z,
-                                               sequence: self.sampleSequence)
-                }
-                self.sampleLock.unlock()
-            } else if error != nil {
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    self.sampleLock.lock()
-                    let current = self.motionGeneration == generation
-                    self.sampleLock.unlock()
-                    guard current, self.sceneActive else { return }
-                    self.stopMotion()
-                    self.sensorUsable = false
-                    self.sendSensorStatus()
-                }
-            }
-        }
+        // Poll Core Motion's newest fused sample at presentation time. No per-sample
+        // OperationQueue blocks, app-side smoothing, or old-event replay can build up.
+        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical)
     }
 
     private func stopMotion() {
         motionManager.stopDeviceMotionUpdates()
         motionRunning = false
-        sampleLock.lock()
-        motionGeneration &+= 1
-        latestSample = nil
-        sampleLock.unlock()
+        lastDeliveredTimestamp = nil
         displayLink?.invalidate()
         displayLink = nil
     }
@@ -308,10 +306,7 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
 
     fileprivate func deliverGravity() {
         guard sceneActive, webReady, !gravityInFlight, let web = webView else { return }
-        sampleLock.lock()
-        let sample = latestSample
-        sampleLock.unlock()
-        guard let sample = sample else { return }
+        guard let sample = motionManager.deviceMotion else { return }
         let orientation: PocketScreenOrientation
         // Read the current scene, never UIDevice.orientation: orientation lock,
         // face-up placement, and UIKit landscape naming must all stay correct.
@@ -321,16 +316,24 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
         case .landscapeRight: orientation = .landscapeRight
         default: orientation = .portrait
         }
-        guard sample.sequence != lastDeliveredSequence || orientation != lastDeliveredOrientation,
-              let gravity = MotionGravity.screen(x: sample.x, y: sample.y, z: sample.z, orientation: orientation) else { return }
-        guard let arguments = Self.json([gravity.x, gravity.y, gravity.z]) else { return }
-        lastDeliveredSequence = sample.sequence
+        guard sample.timestamp != lastDeliveredTimestamp || orientation != lastDeliveredOrientation,
+              let gravity = MotionGravity.screen(x: sample.gravity.x, y: sample.gravity.y,
+                                                 z: sample.gravity.z, orientation: orientation) else { return }
+        let ageMs = max(0, (ProcessInfo.processInfo.systemUptime - sample.timestamp) * 1000)
+        guard ageMs.isFinite,
+              let arguments = Self.json([gravity.x, gravity.y, gravity.z, ageMs, lastBridgeRoundTripMs]) else { return }
+        lastDeliveredTimestamp = sample.timestamp
         lastDeliveredOrientation = orientation
         gravityInFlight = true
         let generation = bridgeGeneration
+        let dispatched = CACurrentMediaTime()
         web.evaluateJavaScript("if(window.PocketNative){PocketNative.onGravity.apply(PocketNative,\(arguments));}") { [weak self, weak web] _, _ in
             guard let self = self, self.webView === web, self.bridgeGeneration == generation else { return }
             self.gravityInFlight = false
+            self.lastBridgeRoundTripMs = max(0, (CACurrentMediaTime() - dispatched) * 1000)
+            // After a busy WebKit frame, immediately replace the old sample. Only
+            // one evaluation may be in flight; never enqueue a history of tilts.
+            if self.lastBridgeRoundTripMs > 33 { self.deliverGravity() }
         }
     }
 
@@ -344,7 +347,32 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
 
     private func sendSensorStatus() {
         callScene("onSensorStatus", [["available": sensorUsable, "active": motionRunning,
-                                     "type": sensorUsable ? "core_motion" : "unavailable", "requestedHz": 120]])
+                                     "type": sensorUsable ? "core_motion" : "unavailable", "requestedHz": 120,
+                                     "delivery": "latest_sample", "bridgeRoundTripMs": lastBridgeRoundTripMs]])
+    }
+
+    private func showUpdateInstructions() {
+        guard sceneActive, presentedViewController == nil else { return }
+        let release = updater.release
+        let title = release.map { "更新到 \($0.version)" } ?? "测试版更新"
+        let notes = release?.notes ?? ""
+        let instructions = "当前使用免费签名，需在 Mac 上更新：\n\n"
+            + "1. 下载并解压完整工程，打开 ios/PocketBalls.xcodeproj。\n"
+            + "2. 保持原来的 Team 和 Bundle Identifier。\n"
+            + "3. 连接 iPhone，在 Xcode 按 ⌘R 覆盖安装。\n\n"
+            + "无需卸载球屿。免费签名到期后也需要通过 Xcode 重新安装。"
+        let alert = UIAlertController(title: title,
+            message: (notes.isEmpty ? "" : notes + "\n\n") + instructions, preferredStyle: .alert)
+        let source = release?.source ?? PocketUpdateChecker.sourceURL
+        alert.addAction(UIAlertAction(title: "复制下载链接", style: .default) { _ in
+            UIPasteboard.general.url = source
+        })
+        alert.addAction(UIAlertAction(title: "打开源码下载", style: .default) { _ in
+            // The URL comes exclusively from the updater's exact HTTPS allowlist.
+            UIApplication.shared.open(source)
+        })
+        alert.addAction(UIAlertAction(title: "知道了", style: .cancel))
+        present(alert, animated: true)
     }
 
     private func callScene(_ method: String, _ arguments: [Any], completion: (() -> Void)? = nil) {
@@ -419,6 +447,8 @@ final class PocketViewController: UIViewController, WKScriptMessageHandler, WKNa
     }
 
     deinit {
+        updater.cancel()
+        feedback.setActive(false)
         motionManager.stopDeviceMotionUpdates()
         displayLink?.invalidate()
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "pocket")

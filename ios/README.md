@@ -1,4 +1,4 @@
-# 球屿 iOS · 免费账号真机测试
+# 球屿 iOS 0.2.0 · 免费账号真机测试
 
 这是可在自己的 Mac 上编译、签名并运行的 Xcode 工程。免费 Apple Account 的 Personal Team 即可；不需要先付费加入开发者计划。
 
@@ -27,7 +27,8 @@
 
 - 沿用 Android 版的足球、网球、篮球、排球和混合模式，网球尺寸较小。
 - 默认全屏，仅右上角保留折叠菜单；可调整 1–32 个球、暂停和重新摆放。
-- Core Motion 提供融合后的重力，按实际屏幕方向映射：屏幕哪边低，小球往哪边滚。
+- 可在折叠菜单选择自由滚动、指尖拨球和浅窝托盘；声音与震动独立开关，声音遵循 iPhone 的静音设置。
+- Core Motion 请求 120 Hz 采样，画面发送前直接读取最新融合重力，按实际屏幕方向映射：屏幕哪边低，小球往哪边滚。桥接同一时间只保留一条在途调用，避免积压旧姿态。
 - 全屏画面延伸至屏幕边缘，操作按钮避开刘海、灵动岛和系统安全区域。
 - 横竖屏切换调整盒子尺寸；保存球体类型、数量、位置和暂停状态。
 - 进入后台停止动作采样和绘制，返回时恢复。模拟器没有真实动作传感器，可以拖动画面或在菜单开启自动演示；真实倾斜效果必须用 iPhone 验收。
@@ -35,11 +36,19 @@
 
 ## 后续更新
 
-免费直连测试版通过 Xcode 再次运行来更新。它不会下载或安装 Android APK，也没有 TestFlight 自动分发配置。需要方便地持续分发时，再加入 Apple Developer Program 并接入 TestFlight。
+右上角菜单可以检查版本；进入应用时也会自动检查，成功后 6 小时内不会再次自动请求。有新版本时显示版本号和「查看更新方法」，原生弹窗给出 Mac 安装步骤，并可复制或打开完整源码下载链接。离线时仍可正常玩，已发现的更新信息保存在本机。
+
+免费直连测试版仍需通过 Xcode 再次运行来完成签名和覆盖安装；应用内检查版本不能代替签名，也不能延长 7 天描述文件有效期。保持原来的 Team 和 Bundle Identifier，不要先卸载旧版。它不会下载或安装 Android APK，也没有 TestFlight 自动分发配置。需要持续无线分发时，再加入 Apple Developer Program 并接入 TestFlight。
+
+更新清单使用仓库的 `updates/latest.json`，iOS 只读取其 `ios` 对象：`versionName`、递增的 `buildNumber`、`sourceUrl`、`notes`。版本清单及源码地址严格限制为本项目的固定 HTTPS 地址，拒绝跳转到其他域名的清单响应，不下载或运行远端脚本。
 
 ## 源码与验证
 
-`PocketBalls.xcodeproj` 直接把 `../app/src/main/assets` 作为目录资源打进应用，原生代码从 bundle 内的 `assets/index.html` 加载。共享 JavaScript 中的 `AndroidPocket` 是既有桥接接口名称，iOS 提供兼容实现；Android 专用的 APK 更新入口在 iOS 中隐藏。
+`PocketBalls.xcodeproj` 直接把 `../app/src/main/assets` 作为目录资源打进应用，原生代码从 bundle 内的 `assets/index.html` 加载。共享 JavaScript 中的 `AndroidPocket` 是既有桥接接口名称，iOS 提供兼容实现。`checkForUpdates` 请求 iOS 清单，`downloadUpdate` 和 `installUpdate` 均打开原生更新步骤，不执行安装。
+
+`playFeedback(type, strength, sound, haptics)` 使用本地 `assets/audio/*.wav` 池化播放和轻触觉反馈；声音至少间隔 45 ms、触觉至少间隔 100 ms，避免密集球堆产生持续震动。`setFeedbackState(active, sound, haptics)` 同步暂停及反馈偏好，关闭声音时立即停止现有音效，超过 150 ms 的旧碰撞消息直接丢弃。后台停止反馈，无录音权限请求。
+
+动作桥接 `onGravity(x, y, z, sampleAgeMs, bridgeRoundTripMs)` 的后两项用于定位延迟：前者是发送时最新传感器数据的年龄，后者是上一条已完成 WebKit 调用的往返时间。这些是软件链路诊断，不代表实测的物理动作到屏幕显示总延迟；真实端到端体验仍需在 iPhone 上验收。
 
 GitHub Actions 的 iOS 工作流验证真机架构的无签名编译、重力方向映射与资源打包。云端生成的无签名产物不等于可以在你的 iPhone 上直接安装；最终真机签名在你的 Mac 上由 Personal Team 完成。云端和模拟器检查不能代替真实 iPhone 的传感器延迟、帧率与系统安装验收。
 
@@ -49,3 +58,5 @@ Apple 官方参考：
 - [免费 Personal Team 与 7 天限制](https://developer.apple.com/help/account/basics/about-your-developer-account)
 - [开启开发者模式](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
 - [自动管理开发描述文件](https://developer.apple.com/help/account/provisioning-profiles/create-a-development-provisioning-profile/)
+- [Core Motion 最新样本轮询](https://developer.apple.com/documentation/coremotion/cmmotionmanager)
+- [遵循静音设置的 Ambient 音频类别](https://developer.apple.com/documentation/avfaudio/avaudiosession/category-swift.struct/ambient)

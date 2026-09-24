@@ -5,12 +5,21 @@
     <div class="ib-glass" aria-hidden="true"></div>
     <button type="button" class="ib-menu" aria-label="打开控制面板" aria-expanded="false" aria-controls="pocket-controls"><span aria-hidden="true">⋯</span></button>
     <section id="pocket-controls" class="ib-panel" aria-label="小球设置" hidden>
+      <div class="ib-section-caption">怎么玩</div>
+      <div class="ib-segments ib-modes" role="group" aria-label="玩法模式">
+        <button type="button" data-mode="relax" aria-pressed="true">自由发呆</button>
+        <button type="button" data-mode="touch" aria-pressed="false">指尖拨球</button>
+        <button type="button" data-mode="tray" aria-pressed="false">浅窝托盘</button>
+      </div>
+      <p class="ib-mode-hint">慢慢倾斜，看看球滚向哪里</p>
       <div class="ib-types" role="group" aria-label="球的类型">
         <button type="button" data-type="soccer" aria-pressed="false"><span aria-hidden="true">⚽</span>足球</button><button type="button" data-type="tennis" aria-pressed="false"><span aria-hidden="true">🎾</span>网球</button><button type="button" data-type="basketball" aria-pressed="false"><span aria-hidden="true">🏀</span>篮球</button><button type="button" data-type="volleyball" aria-pressed="false"><span aria-hidden="true">🏐</span>排球</button><button type="button" data-type="mixed" aria-pressed="true"><span aria-hidden="true">●</span>混合</button>
       </div>
       <div class="ib-quantity-row"><span class="ib-label">数量</span><div class="ib-count" role="group" aria-label="调整小球数量"><button type="button" class="ib-less" aria-label="减少一个球">−</button><output aria-live="polite">16 颗</output><button type="button" class="ib-more" aria-label="增加一个球">＋</button></div></div>
       <div class="ib-actions"><button type="button" class="ib-reset">重新摆放</button><button type="button" class="ib-pause" aria-pressed="false">暂停</button></div>
-      <button type="button" class="ib-demo" aria-pressed="false" hidden>自动演示</button><p class="ib-sensor" role="status">倾斜手机，让小球滚起来</p><section class="ib-update" aria-label="应用更新" hidden><button type="button" class="ib-update-button">检查更新</button><progress class="ib-update-progress" max="100" hidden></progress><p class="ib-update-message" role="status" hidden></p></section><p class="ib-version"></p>
+      <div class="ib-setting-row"><span class="ib-label">倾斜灵敏度</span><div class="ib-segments ib-sensitivity" role="group" aria-label="倾斜灵敏度"><button type="button" data-sensitivity="1" aria-pressed="false">自然</button><button type="button" data-sensitivity="1.35" aria-pressed="true">灵敏</button><button type="button" data-sensitivity="1.7" aria-pressed="false">更灵敏</button></div></div>
+      <div class="ib-feedback-controls"><label class="ib-toggle"><span>碰撞声音</span><input class="ib-sound" type="checkbox" role="switch"><span class="ib-switch" aria-hidden="true"></span></label><label class="ib-toggle"><span>轻触反馈</span><input class="ib-haptics" type="checkbox" role="switch" checked><span class="ib-switch" aria-hidden="true"></span></label></div>
+      <button type="button" class="ib-demo" aria-pressed="false" hidden>自动演示</button><p class="ib-sensor" role="status">倾斜手机，让小球滚起来</p><section class="ib-update" aria-label="应用更新" hidden><button type="button" class="ib-update-button">检查更新</button><progress class="ib-update-progress" max="100" hidden></progress><p class="ib-update-message" role="status" hidden></p></section><p class="ib-version"></p><button type="button" class="ib-diagnostics">复制运行信息</button>
     </section>
   </main>
 </div>
@@ -34,6 +43,22 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#f1eee7;ove
 #pocket-android .ib-menu[aria-expanded="true"]{background:rgba(255,255,255,.7)}
 #pocket-android .ib-panel{position:absolute;z-index:3;top:calc(var(--inset-top) + 74px);right:calc(var(--inset-right) + 14px);width:min(352px,calc(100% - var(--inset-left) - var(--inset-right) - 28px));max-height:calc(100% - var(--inset-top) - var(--inset-bottom) - 88px);overflow:auto;overscroll-behavior:contain;padding:13px;border-radius:27px;border:1px solid rgba(255,255,255,.7);background:rgba(248,252,255,.56);-webkit-backdrop-filter:blur(26px) saturate(150%);backdrop-filter:blur(26px) saturate(150%);box-shadow:0 16px 42px rgba(27,45,53,.15),inset 0 1px 0 rgba(255,255,255,.4);transform-origin:calc(100% - 25px) 0;animation:ib-panel-in .18s ease both}
 #pocket-android .ib-types{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px}
+#pocket-android .ib-section-caption{font-size:11px;color:#697d82;margin:2px 6px 9px;letter-spacing:.08em}
+#pocket-android .ib-segments{display:flex;gap:3px;padding:3px;background:rgba(70,95,99,.065);border-radius:16px}
+#pocket-android .ib-segments button{flex:1;min-height:42px;white-space:nowrap;font-size:12px;padding:5px 8px;border-radius:13px;color:#62767b}
+#pocket-android .ib-segments button[aria-pressed="true"]{color:#294d4b;background:rgba(255,255,255,.76);box-shadow:0 2px 6px rgba(45,73,75,.06)}
+#pocket-android .ib-mode-hint{font-size:11px;line-height:1.55;margin:9px 5px 12px;color:#60717d;min-height:17px}
+#pocket-android .ib-setting-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(43,62,72,.11)}
+#pocket-android .ib-setting-row>.ib-label{font-size:12px;white-space:nowrap;margin-left:5px}
+#pocket-android .ib-sensitivity button{font-size:11px;padding:5px 7px;min-height:38px}
+#pocket-android .ib-feedback-controls{display:flex;gap:8px;margin-top:11px}
+#pocket-android .ib-toggle{position:relative;display:flex;flex:1;gap:6px;align-items:center;justify-content:space-between;min-height:44px;font-size:12px;padding:7px 9px;border-radius:15px;background:rgba(255,255,255,.32);cursor:pointer}
+#pocket-android .ib-toggle input{position:absolute;opacity:0;width:1px;height:1px}
+#pocket-android .ib-switch{position:relative;flex:0 0 32px;width:32px;height:20px;border-radius:10px;background:rgba(75,100,104,.2);transition:background .16s}
+#pocket-android .ib-switch::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;background:white;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.12);transition:transform .16s}
+#pocket-android .ib-toggle input:checked+.ib-switch{background:#64978c}
+#pocket-android .ib-toggle input:checked+.ib-switch::after{transform:translateX(12px)}
+#pocket-android .ib-toggle input:focus-visible+.ib-switch{outline:2px solid #537c78;outline-offset:3px}
 #pocket-android .ib-types button{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:7px;min-width:0;min-height:72px;padding:8px 1px;border-radius:18px;font-size:12px;line-height:1.2;color:#60717d}
 #pocket-android .ib-types span{display:grid;place-items:center;width:32px;height:32px;font-size:28px;line-height:32px}
 #pocket-android .ib-types img{display:block;width:32px;height:32px;object-fit:contain}
@@ -58,6 +83,7 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#f1eee7;ove
 #pocket-android .ib-update-progress::-webkit-progress-bar{background:rgba(83,124,120,.12);border-radius:3px}
 #pocket-android .ib-update-progress::-webkit-progress-value{background:#558982;border-radius:3px}
 #pocket-android .ib-version{font-size:10px;text-align:center;color:#78858e;margin:4px 0 1px}
+#pocket-android .ib-diagnostics{display:block;margin:1px auto 0;min-height:36px;padding:5px 12px;font-size:10px;color:#697d82}
 #pocket-android button:disabled{opacity:.35;cursor:default}
 @keyframes ib-panel-in{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
 @media(max-width:340px){#pocket-android .ib-types{grid-template-columns:repeat(3,minmax(0,1fr))}#pocket-android .ib-types button{min-height:64px}}
@@ -67,7 +93,10 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#f1eee7;ove
 <script src="three.min.js"></script>
 <script src="sport-materials.js"></script>
 <script src="ball-physics-v2.js"></script>
+<script src="play-modes.js"></script>
 <script src="relax-ball-sizes-v4.js"></script>
 <script src="pocket-interior-v4.js"></script>
+<script src="pocket-feedback.js"></script>
 <script src="android-scene.js"></script>
+<script src="pocket-diagnostics.js"></script>
 </body></html>

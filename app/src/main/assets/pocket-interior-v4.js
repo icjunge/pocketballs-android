@@ -1,7 +1,7 @@
 /* A rimless, rounded pocket viewed through its top opening.
  * Floor z = 0; opening z = depth. No transparent AO cards or coplanar liners.
  */
-function buildPocketInterior(THREE, { width, height, corner, depth }) {
+function buildPocketInterior(THREE, { width, height, corner, depth, terrain=null }) {
   const group = new THREE.Group();
   group.name = 'PocketInteriorV4';
   const halfW = width / 2, halfH = height / 2;
@@ -29,17 +29,41 @@ function buildPocketInterior(THREE, { width, height, corner, depth }) {
   const floorRing = ring(fillet), n = floorRing.length;
 
   // A finite rounded floor, not an oversized plane visible outside the pocket.
-  const floorPositions = [0, 0, 0], floorNormals = [0, 0, 1], floorUV = [.5, .5];
+  const floorPositions = [], floorNormals = [], floorUV = [], floorColors=[];
   const floorIndices = [];
-  floorRing.forEach(p => {
-    floorPositions.push(p.x, p.y, 0); floorNormals.push(0, 0, 1);
-    floorUV.push(p.x / floorW + .5, p.y / floorH + .5);
-  });
-  for (let i = 0; i < n; i++) floorIndices.push(0, 1 + i, 1 + (i + 1) % n);
+  if(terrain){
+    // A rounded grid samples the same analytic floor used by contacts. The
+    // 0.13-unit spacing gives each broad, shallow well a smooth silhouette.
+    const cols=Math.min(180,Math.max(24,Math.ceil(floorW/.13)));
+    const rows=Math.min(220,Math.max(24,Math.ceil(floorH/.13)));
+    for(let row=0;row<=rows;row++){
+      const y=(row/rows-.5)*floorH;
+      const dy=Math.max(0,Math.abs(y)-(floorH/2-floorR));
+      const extent=floorW/2-floorR+Math.sqrt(Math.max(0,floorR*floorR-dy*dy));
+      for(let col=0;col<=cols;col++){
+        const x=(col/cols*2-1)*extent,s=terrain.sample(x,y),len=Math.hypot(s.dx,s.dy,1);
+        floorPositions.push(x,y,s.height);floorNormals.push(-s.dx/len,-s.dy/len,1/len);
+        // Broad recess AO makes the concavity legible even with the phone held
+        // nearly face-on. It lives on the actual curved surface, not a decal.
+        const recess=Math.sqrt(Math.max(0,-s.height)/(terrain.wells[0].depth||1));
+        const shade=1-recess*.32;floorColors.push(shade,shade,shade);
+        floorUV.push(x/floorW+.5,y/floorH+.5);
+        if(row<rows&&col<cols){const i=row*(cols+1)+col;floorIndices.push(i,i+1,i+cols+1,i+1,i+cols+2,i+cols+1);}
+      }
+    }
+  }else{
+    floorPositions.push(0,0,0);floorNormals.push(0,0,1);floorUV.push(.5,.5);
+    floorRing.forEach(p => {
+      floorPositions.push(p.x, p.y, 0); floorNormals.push(0, 0, 1);
+      floorUV.push(p.x / floorW + .5, p.y / floorH + .5);
+    });
+    for (let i = 0; i < n; i++) floorIndices.push(0, 1 + i, 1 + (i + 1) % n);
+  }
   const floorGeometry = new THREE.BufferGeometry();
   floorGeometry.setAttribute('position', new THREE.Float32BufferAttribute(floorPositions, 3));
   floorGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(floorNormals, 3));
   floorGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(floorUV, 2));
+  if(terrain)floorGeometry.setAttribute('color',new THREE.Float32BufferAttribute(floorColors,3));
   floorGeometry.setIndex(floorIndices);
 
   const floorCanvas = document.createElement('canvas');
@@ -51,7 +75,7 @@ function buildPocketInterior(THREE, { width, height, corner, depth }) {
   floorMap.anisotropy = 4;
   floorMap.wrapS = floorMap.wrapT = THREE.ClampToEdgeWrapping;
   const floorMaterial = new THREE.MeshStandardMaterial({
-    color: 0xffffff, map: floorMap, roughness: .91, metalness: 0
+    color: 0xffffff, map: floorMap, roughness: .91, metalness: 0,vertexColors:!!terrain
   });
   const floor = new THREE.Mesh(floorGeometry, floorMaterial);
   floor.name = 'PocketFloor'; floor.receiveShadow = true; group.add(floor);
@@ -156,7 +180,7 @@ function buildPocketInterior(THREE, { width, height, corner, depth }) {
     attr.needsUpdate = true;
   }
   setTheme(false);
-  group.userData = { floorZ: 0, lidZ: depth, fillet, width, height, corner };
+  group.userData = { floorZ: 0, lidZ: depth, fillet, width, height, corner, terrain:!!terrain };
   return { group, setTheme, floor, walls,
     materials: { floor: floorMaterial, wall: wallMaterial },
     dispose() {

@@ -1,6 +1,8 @@
 package com.idleballs.pocket;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
@@ -46,6 +48,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Offline WebGL scene driven by native, display-aware gravity. */
 public final class MainActivity extends Activity implements SensorEventListener,
@@ -69,11 +72,16 @@ public final class MainActivity extends Activity implements SensorEventListener,
     private WebView webView;
     private SharedPreferences preferences;
     private AppUpdater updater;
+    private CollisionFeedback feedback;
     private SensorManager sensorManager;
     private DisplayManager displayManager;
     private Sensor gravitySensor;
     private boolean accelerometerFallback, orientationSensor, webReady, sensorRegistered;
     private volatile boolean resumed;
+    private volatile boolean motionPullEnabled;
+    private volatile int displayRotation = Surface.ROTATION_0;
+    private final AtomicInteger feedbackEpoch = new AtomicInteger();
+    private volatile boolean sceneFeedbackActive, feedbackSound, feedbackHaptics;
     private boolean initializedSensor, gravityEvaluationInFlight;
     private boolean deliveryLoopRunning;
     private long previousSensorTime, sampleSequence, lastDeliveredSequence = -1;
@@ -81,10 +89,12 @@ public final class MainActivity extends Activity implements SensorEventListener,
     private int lastDeliveredRotation = -1, deliveryEpoch;
     private int rendererRecoveryCount;
     private int insetTop, insetRight, insetBottom, insetLeft;
+    private double lastBridgeRoundTripMs;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         preferences = getSharedPreferences("pocket-state", MODE_PRIVATE);
+        feedback = new CollisionFeedback(this);
         updater = new AppUpdater(this, status -> evaluate(
             "if(window.PocketNative&&PocketNative.onUpdateStatus)PocketNative.onUpdateStatus("
             + status.toString() + ");"));
@@ -157,6 +167,11 @@ public final class MainActivity extends Activity implements SensorEventListener,
     @SuppressWarnings("SetJavaScriptEnabled")
     private void createWebView() {
         webReady = false;
+        motionPullEnabled = false;
+        feedbackEpoch.incrementAndGet();
+        sceneFeedbackActive = false;
+        feedbackSound = feedbackHaptics = false;
+        if (feedback != null) feedback.setState(false, false, false);
         gravityEvaluationInFlight = false;
         deliveryEpoch++;
         lastDeliveredSequence = -1;
@@ -243,6 +258,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
                 : file.endsWith(".jpg") ? "image/jpeg"
                 : file.endsWith(".svg") ? "image/svg+xml"
                 : file.endsWith(".json") ? "application/json"
+                : file.endsWith(".wav") ? "audio/wav"
                 : file.endsWith(".html") ? "text/html" : "application/octet-stream";
             Map<String, String> headers = new HashMap<>();
             headers.put("Cache-Control", "no-cache");
@@ -274,6 +290,9 @@ public final class MainActivity extends Activity implements SensorEventListener,
         super.onResume();
         if (updater != null) updater.onResume();
         resumed = true;
+        feedbackEpoch.incrementAndGet();
+        displayRotation = currentRotation();
+        if (feedback != null) feedback.setActive(true);
         if (webView != null) webView.onResume();
         synchronized (sensorLock) {
             initializedSensor = false;
@@ -294,6 +313,8 @@ public final class MainActivity extends Activity implements SensorEventListener,
     @Override protected void onPause() {
         if (updater != null) updater.onPause();
         resumed = false;
+        feedbackEpoch.incrementAndGet();
+        if (feedback != null) feedback.setActive(false);
         if (sensorManager != null) sensorManager.unregisterListener(this);
         sensorRegistered = false;
         stopGravityDelivery();
@@ -314,6 +335,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
     @Override protected void onDestroy() {
         if (updater != null) updater.destroy();
+        if (feedback != null) feedback.destroy();
         resumed = false;
         stopGravityDelivery();
         if (sensorManager != null) sensorManager.unregisterListener(this);
@@ -346,6 +368,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
     private void notifyDisplayChanged() {
         if (webView == null) return;
+        displayRotation = currentRotation();
         container.requestApplyInsets();
         sendInsets();
         evaluate("window.dispatchEvent(new Event('resize'));");
@@ -395,7 +418,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
     };
 
     private void startGravityDelivery() {
-        if (deliveryLoopRunning || choreographer == null) return;
+        if (motionPullEnabled || deliveryLoopRunning || choreographer == null) return;
         deliveryLoopRunning = true;
         choreographer.postFrameCallback(gravityFrame);
     }
@@ -407,8 +430,9 @@ public final class MainActivity extends Activity implements SensorEventListener,
     }
 
     private void sendGravity() {
-        if (!webReady || !resumed || webView == null || gravityEvaluationInFlight) return;
+        if (motionPullEnabled || !webReady || !resumed || webView == null || gravityEvaluationInFlight) return;
         final int rotation = currentRotation();
+        displayRotation = rotation;
         final long sampleTime;
         synchronized (sensorLock) {
             if (!initializedSensor || (sampleSequence == lastDeliveredSequence
@@ -422,12 +446,16 @@ public final class MainActivity extends Activity implements SensorEventListener,
         final WebView target = webView;
         final int epoch = deliveryEpoch;
         gravityEvaluationInFlight = true;
+        final long bridgeStartedNs = SystemClock.elapsedRealtimeNanos();
         double ageMs = Math.max(0, (SystemClock.elapsedRealtimeNanos() - sampleTime) / 1_000_000.0);
         String js = "if(window.PocketNative&&PocketNative.onGravity)PocketNative.onGravity("
             + screenGravity[0] + "," + screenGravity[1] + "," + screenGravity[2]
-            + "," + ageMs + ");";
+            + "," + ageMs + "," + lastBridgeRoundTripMs + ");";
         target.evaluateJavascript(js, ignored -> {
-            if (webView == target && deliveryEpoch == epoch) gravityEvaluationInFlight = false;
+            if (webView == target && deliveryEpoch == epoch) {
+                lastBridgeRoundTripMs = (SystemClock.elapsedRealtimeNanos() - bridgeStartedNs) / 1_000_000.0;
+                gravityEvaluationInFlight = false;
+            }
         });
     }
     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }
@@ -492,6 +520,64 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
     /** Exposed only to bundled assets; document navigation is restricted above. */
     public final class NativeBridge {
+        @JavascriptInterface public void setFeedbackState(boolean active, boolean sound,
+                boolean haptics) {
+            // Change the epoch on WebView's bridge thread immediately so collisions
+            // already waiting on the UI queue cannot play after pause/mute.
+            sceneFeedbackActive = active;
+            feedbackSound = sound;
+            feedbackHaptics = haptics;
+            feedbackEpoch.incrementAndGet();
+            mainHandler.post(() -> {
+                if (feedback != null && !isDestroyed())
+                    feedback.setState(sceneFeedbackActive, feedbackSound, feedbackHaptics);
+            });
+        }
+        @JavascriptInterface public void copyDiagnostics(String json) {
+            if (!resumed || json == null || json.length() > 8192) return;
+            mainHandler.post(() -> {
+                if (!resumed || isDestroyed()) return;
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (clipboard != null) clipboard.setPrimaryClip(ClipData.newPlainText("球屿运行信息", json));
+            });
+        }
+        /** Read immediately before a physics frame; no UI callback or queued old sample.
+         * JavascriptInterface runs on WebView's bridge thread. It must never wait for
+         * the UI thread: display rotation is therefore cached by the UI callbacks.
+         */
+        @JavascriptInterface public String motionSample() {
+            if (!resumed) return "null";
+            if (!motionPullEnabled) {
+                motionPullEnabled = true;
+                mainHandler.post(() -> { if (motionPullEnabled) stopGravityDelivery(); });
+            }
+            float x, y, z;
+            long sampledAt, sequence;
+            synchronized (sensorLock) {
+                if (!resumed || !initializedSensor) return "null";
+                x = filteredSensor[0]; y = filteredSensor[1]; z = filteredSensor[2];
+                sampledAt = previousSensorTime;
+                sequence = sampleSequence;
+            }
+            float[] screen = new float[3];
+            GravityMapper.toScreen(x, y, z, displayRotation, screen);
+            double ageMs = Math.max(0, (SystemClock.elapsedRealtimeNanos() - sampledAt) / 1_000_000.0);
+            return "{\"x\":" + screen[0] + ",\"y\":" + screen[1] + ",\"z\":" + screen[2]
+                + ",\"ageMs\":" + ageMs + ",\"sequence\":" + sequence + "}";
+        }
+        @JavascriptInterface public void playFeedback(String type, double strength,
+                boolean sound, boolean haptics) {
+            if (!resumed || !sceneFeedbackActive || !Double.isFinite(strength) || strength <= 0
+                    || (!(sound && feedbackSound) && !(haptics && feedbackHaptics))) return;
+            final long requestedAt = SystemClock.elapsedRealtime();
+            final int epoch = feedbackEpoch.get();
+            mainHandler.post(() -> {
+                // Old collision feedback must not appear after a pause or UI stall.
+                if (resumed && feedbackEpoch.get() == epoch && feedback != null
+                        && SystemClock.elapsedRealtime() - requestedAt < 100)
+                    feedback.play(type, strength, sound, haptics);
+            });
+        }
         @JavascriptInterface public void checkForUpdates() { updater.checkForUpdates(); }
         @JavascriptInterface public void downloadUpdate() { updater.downloadUpdate(); }
         @JavascriptInterface public void installUpdate() { updater.installUpdate(); }
@@ -501,6 +587,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
                 webReady = true;
                 if (updater != null) updater.onUiReady();
                 sendSensorStatus(); sendInsets(); sendVisibility();
+                if (resumed) startGravityDelivery();
                 sendGravity();
             });
         }
@@ -518,7 +605,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
             try {
                 return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
             } catch (android.content.pm.PackageManager.NameNotFoundException ignored) {
-                return "0.1.1";
+                return "0.2.0";
             }
         }
         @JavascriptInterface public boolean isSensorAvailable() { return gravitySensor != null; }

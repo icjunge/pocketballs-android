@@ -5,6 +5,12 @@ sdk_root="${POCKETBALLS_ANDROID_SDK:?Set POCKETBALLS_ANDROID_SDK}"
 main_dir="$project_dir/app/src/main"
 work_dir="$project_dir/build/manual"
 output_dir="$project_dir/dist"
+version_name="$(python3 - "$main_dir/AndroidManifest.xml" <<'PY'
+import sys, xml.etree.ElementTree as ET
+print(ET.parse(sys.argv[1]).getroot().attrib['{http://schemas.android.com/apk/res/android}versionName'])
+PY
+)"
+[[ "$version_name" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid Android version name" >&2; exit 2; }
 if [[ -f "$sdk_root/platforms/android-35/android.jar" ]]; then
  android_jar="$sdk_root/platforms/android-35/android.jar"; build_tools="$sdk_root/build-tools/35.0.0"
 else
@@ -17,7 +23,7 @@ mkdir -p "$work_dir" "$output_dir"
 rm -rf "$work_dir/classes" "$work_dir/gen" "$work_dir/dex"
 mkdir -p "$work_dir/classes" "$work_dir/gen" "$work_dir/dex"
 "$build_tools/aapt2" compile --dir "$main_dir/res" -o "$work_dir/resources.zip"
-"$build_tools/aapt2" link -o "$work_dir/resources.apk" -I "$android_jar" --manifest "$main_dir/AndroidManifest.xml" --java "$work_dir/gen" --min-sdk-version 26 --target-sdk-version 35 --auto-add-overlay "$work_dir/resources.zip" -A "$main_dir/assets"
+"$build_tools/aapt2" link -o "$work_dir/resources.apk" -I "$android_jar" --manifest "$main_dir/AndroidManifest.xml" --java "$work_dir/gen" --min-sdk-version 26 --target-sdk-version 35 --auto-add-overlay "$work_dir/resources.zip" -A "$main_dir/assets" -0 wav
 python3 - "$main_dir/java" "$work_dir/gen" "$work_dir/java-sources.txt" <<'PY'
 from pathlib import Path
 import sys
@@ -42,9 +48,9 @@ shutil.copyfile(sys.argv[1],sys.argv[3])
 with ZipFile(sys.argv[3],'a',ZIP_DEFLATED) as z:
  for p in sorted(Path(sys.argv[2]).glob('*.dex')):z.write(p,p.name)
 PY
-"$build_tools/zipalign" -f -P 16 4 "$work_dir/unaligned.apk" "$output_dir/PocketBalls-0.1.1-aligned-unsigned.apk"
-"$build_tools/zipalign" -c -P 16 4 "$output_dir/PocketBalls-0.1.1-aligned-unsigned.apk"
-"$build_tools/aapt2" dump badging "$output_dir/PocketBalls-0.1.1-aligned-unsigned.apk" > "$output_dir/apk-badging.txt"
+"$build_tools/zipalign" -f -P 16 4 "$work_dir/unaligned.apk" "$output_dir/PocketBalls-$version_name-aligned-unsigned.apk"
+"$build_tools/zipalign" -c -P 16 4 "$output_dir/PocketBalls-$version_name-aligned-unsigned.apk"
+"$build_tools/aapt2" dump badging "$output_dir/PocketBalls-$version_name-aligned-unsigned.apk" > "$output_dir/apk-badging.txt"
 cp "$build_tools/lib/apksigner.jar" "$output_dir/apksigner.jar"
 python3 - "$output_dir" <<'PY'
 from pathlib import Path

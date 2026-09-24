@@ -1,7 +1,7 @@
 /* Sphere dynamics for the deep pocket demo. Coordinates: floor z=0, lid z=depth.
    step accepts frame dt and advances a fixed 120 Hz simulation. No dependencies
    besides THREE for optional mesh rotation. All collision geometry stays spherical. */
-function createBallPhysics({THREE, halfW, halfH, corner, depth}) {
+function createBallPhysics({THREE, halfW, halfH, corner, depth, terrain=null, onImpact=null}) {
   const H=1/120, SKIN=.0025, EPS=.00002, ITER=16;
   const profiles={
     soccer:    {mass:.43, restitution:.44, friction:.38, rolling:.017, inertia:.64},
@@ -10,6 +10,7 @@ function createBallPhysics({THREE, halfW, halfH, corner, depth}) {
     volleyball:{mass:.28, restitution:.42, friction:.40, rolling:.021, inertia:.64}
   };
   let accumulator=0, nextId=1, sleeping=false, quietTime=0, lastSignature='', lastGravity=null;
+  let drag=null, strongestImpact=null;
   const axis=THREE?new THREE.Vector3():null, rotation=THREE?new THREE.Quaternion():null;
   function configureBall(b,type=b.type) {
     b.type=profiles[type]?type:'soccer'; const p=profiles[b.type];
@@ -27,6 +28,22 @@ function createBallPhysics({THREE, halfW, halfH, corner, depth}) {
   }
   // Minkowski inset of the rounded rectangle: centers cannot approach any
   // side closer than their radius, including the curved corner segments.
+  function floorContact(b) {
+    if(!terrain)return {nx:0,ny:0,nz:-1,p:b.r-b.z};
+    // Closest point on a smooth height field. Damped iterations solve the two
+    // tangent derivatives of squared distance, so the sphere does not sink by
+    // a radius on slopes (a simple z=height+r clamp would do that).
+    let x=b.x,y=b.y,s=terrain.sample(x,y);
+    for(let i=0;i<12;i++){
+      const dz=s.height-b.z;
+      const ex=x-b.x+dz*s.dx,ey=y-b.y+dz*s.dy;
+      if(Math.abs(ex)+Math.abs(ey)<1e-7)break;
+      x-=ex*.55;y-=ey*.55;s=terrain.sample(x,y);
+    }
+    const length=Math.hypot(s.dx,s.dy,1),nx=s.dx/length,ny=s.dy/length,nz=-1/length;
+    const distance=(x-b.x)*nx+(y-b.y)*ny+(s.height-b.z)*nz;
+    return {nx,ny,nz,p:b.r-distance};
+  }
   function wallContacts(b, visit, margin=0) {
     const hx=halfW-b.r, hy=halfH-b.r, cr=Math.max(0,corner-b.r);
     const ax=Math.abs(b.x), ay=Math.abs(b.y), sx=b.x<0?-1:1, sy=b.y<0?-1:1;
@@ -38,7 +55,8 @@ function createBallPhysics({THREE, halfW, halfH, corner, depth}) {
       if(ax-hx>=-margin)visit(sx,0,0,ax-hx);
       if(ay-hy>=-margin)visit(0,sy,0,ay-hy);
     }
-    if(b.r-b.z>=-margin)visit(0,0,-1,b.r-b.z);
+    const floor=floorContact(b);
+    if(floor.p>=-margin)visit(floor.nx,floor.ny,floor.nz,floor.p);
     if(b.z+b.r-depth>=-margin)visit(0,0,1,b.z+b.r-depth);
   }
   function constrain(b) {
@@ -53,9 +71,11 @@ function createBallPhysics({THREE, halfW, halfH, corner, depth}) {
     const vx=(b?b.vx:0)-a.vx,vy=(b?b.vy:0)-a.vy,vz=(b?b.vz:0)-a.vz;
     const approach=-(vx*nx+vy*ny+vz*nz);
     // Restitution only applies to meaningful impacts, never static support.
-    if(p>=-EPS && approach>.70) {
+    if(approach>.70&&approach*H>=Math.max(0,-p-EPS)) {
       const e=b?Math.sqrt(a.restitution*b.restitution):a.restitution*.94;
       c.bounce=e*approach;
+      const strength=Math.min(1,Math.max(0,(approach-.70)/8)*Math.sqrt(a.mass/.43));
+      if(!strongestImpact||strength>strongestImpact.strength)strongestImpact={type:a.type,strength};
       const amount=Math.min(.045,(approach-.7)*.0048);
       for(const ball of b?[a,b]:[a])if(amount>ball.squash){
         ball.squash=amount;
@@ -63,7 +83,7 @@ function createBallPhysics({THREE, halfW, halfH, corner, depth}) {
       }
     }
     // Very near contacts may use their remaining gap before being stopped.
-    c.target=p<0?-Math.max(0,-p-EPS)/H:c.bounce;
+    c.target=c.bounce>0?c.bounce:p<0?-Math.max(0,-p-EPS)/H:0;
     c.mu=b?Math.sqrt(a.friction*b.friction)*.73:a.friction;
     c.invTangent=c.invMass+a.r*a.r*a.invInertia+(b?b.r*b.r*b.invInertia:0);
     return c;
@@ -122,6 +142,14 @@ function createBallPhysics({THREE, halfW, halfH, corner, depth}) {
     for(const b of balls){
       b.squash*=Math.exp(-H*15);
       b.vx+=g.x*H;b.vy+=g.y*H;b.vz+=g.z*H;
+      if(drag&&drag.ball===b){
+        // A finite, damped spring applies at the center. It cannot teleport a
+        // ball or move through a wall/another ball. Release retains velocity.
+        let ax=(drag.x-b.x)*180-b.vx*22,ay=(drag.y-b.y)*180-b.vy*22;
+        const a=Math.hypot(ax,ay),limit=90;
+        if(a>limit){ax*=limit/a;ay*=limit/a;}
+        b.vx+=ax*H;b.vy+=ay*H;
+      }
       b.x+=b.vx*H;b.y+=b.vy*H;b.z+=b.vz*H;
       wallContacts(b,(nx,ny,nz,p)=>contacts.push(contact(b,null,nx,ny,nz,p)),SKIN);
     }
@@ -152,7 +180,7 @@ function createBallPhysics({THREE, halfW, halfH, corner, depth}) {
       if(speed>.035||omega>.075)quiet=false;
       if(rotation&&b.mesh&&omega>1e-8){axis.set(b.wx/omega,b.wy/omega,b.wz/omega);rotation.setFromAxisAngle(axis,omega*H);b.mesh.quaternion.premultiply(rotation);}
     }
-    quietTime=quiet?quietTime+H:0;
+    quietTime=quiet&&!drag?quietTime+H:0;
     if(quietTime>.8){sleeping=true;for(const b of balls)b.vx=b.vy=b.vz=b.wx=b.wy=b.wz=0;}
   }
   function step(balls,gravity,dt) {
@@ -162,11 +190,19 @@ function createBallPhysics({THREE, halfW, halfH, corner, depth}) {
     for(const b of balls)if(!b._physicsId||b._physicsType!==b.type)configureBall(b);
     const signature=balls.map(b=>b._physicsId+':'+b.type).join(',');
     const changed=!lastGravity||Math.hypot(g.x-lastGravity.x,g.y-lastGravity.y,g.z-lastGravity.z)>.004;
-    if(changed||signature!==lastSignature||(sleeping&&balls.some(b=>b.vx||b.vy||b.vz||b.wx||b.wy||b.wz))){sleeping=false;quietTime=0;lastGravity={...g};lastSignature=signature;}
+    if(changed||signature!==lastSignature||drag||(sleeping&&balls.some(b=>b.vx||b.vy||b.vz||b.wx||b.wy||b.wz))){sleeping=false;quietTime=0;lastGravity={...g};lastSignature=signature;}
     if(sleeping){for(const b of balls)b.squash*=Math.exp(-Math.min(dt,.1)*15);accumulator=0;return;}
     accumulator+=Math.min(dt,.1);
+    strongestImpact=null;
     while(accumulator+1e-10>=H){substep(balls,g);accumulator-=H;}
+    if(strongestImpact&&onImpact)onImpact(strongestImpact.type,strongestImpact.strength);
   }
-  return {step,configureBall,constrain};
+  function setDrag(ball,x,y){
+    if(!ball||!Number.isFinite(x+y)){drag=null;return;}
+    drag={ball,x:Math.max(-halfW+ball.r,Math.min(halfW-ball.r,x)),y:Math.max(-halfH+ball.r,Math.min(halfH-ball.r,y))};
+    sleeping=false;quietTime=0;
+  }
+  return {step,configureBall,constrain,setDrag,releaseDrag(){drag=null;},wake(){sleeping=false;quietTime=0;},floorContact,
+    getState:()=>({sleeping,quietTime,dragging:!!drag})};
 }
 if(typeof module!=='undefined'&&module.exports)module.exports=createBallPhysics;

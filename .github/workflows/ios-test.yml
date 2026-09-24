@@ -27,8 +27,11 @@ jobs:
           set -euo pipefail
           for source in app/src/main/assets/*.js; do node --check "$source"; done
           node validation/scene-timing.test.cjs
+          node validation/play-physics.test.cjs
           swiftc ios/PocketBalls/MotionGravity.swift ios/Tests/MotionGravityChecks.swift -o "$RUNNER_TEMP/pocket-motion-checks"
           "$RUNNER_TEMP/pocket-motion-checks"
+          swiftc ios/PocketBalls/PocketUpdateChecker.swift ios/Tests/UpdateChecks.swift -o "$RUNNER_TEMP/pocket-update-checks"
+          "$RUNNER_TEMP/pocket-update-checks"
           plutil -lint ios/PocketBalls/Info.plist ios/PocketBalls/PrivacyInfo.xcprivacy ios/PocketBalls.xcodeproj/project.pbxproj
       - name: Compile for iPhone without distribution signing
         run: |
