@@ -17,11 +17,14 @@ jobs:
           java-version: '17'
       - name: JavaScript syntax
         run: for source in app/src/main/assets/*.js; do node --check "$source"; done
-      - name: Gravity mapping tests
+      - name: Motion and update policy tests
         run: |
-          mkdir -p build/gravity-test
-          javac -d build/gravity-test app/src/main/java/com/idleballs/pocket/GravityMapper.java validation/GravityMapperTest.java
-          java -cp build/gravity-test com.idleballs.pocket.GravityMapperTest
+          mkdir -p build/host-tests
+          javac -d build/host-tests app/src/main/java/com/idleballs/pocket/{GravityMapper,RotationGravity,UpdatePolicy}.java validation/{GravityMapperTest,RotationGravityTest,UpdatePolicyTest}.java
+          java -cp build/host-tests com.idleballs.pocket.GravityMapperTest
+          java -cp build/host-tests com.idleballs.pocket.RotationGravityTest
+          java -cp build/host-tests com.idleballs.pocket.UpdatePolicyTest
+          node validation/scene-timing.test.cjs
       - name: Restore verified official Android tools
         run: python3 tools/restore-android-sdk.py "$RUNNER_TEMP/pocket-sdk"
       - name: Compile and align APK

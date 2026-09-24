@@ -15,7 +15,11 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.Process;
+import android.os.SystemClock;
+import android.view.Choreographer;
 import android.view.Display;
 import android.view.DisplayCutout;
 import android.view.Surface;
@@ -48,35 +52,60 @@ public final class MainActivity extends Activity implements SensorEventListener,
         DisplayManager.DisplayListener {
     private static final String ASSET_HOST = "appassets.androidplatform.net";
     private static final String START_URL = "https://" + ASSET_HOST + "/assets/index.html";
-    private static final long DELIVERY_INTERVAL_NS = 16_000_000L;
+    private static final long DELIVERY_INTERVAL_NS = 16_666_667L;
+    private static final long FRAME_TIME_SLOP_NS = 500_000L;
+    private static final int SENSOR_PERIOD_US = 8_333;
     private static final int MAX_STATE_LENGTH = 512 * 1024;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    // Sensor callbacks never wait for WebView/UI work. Only the newest sample is retained.
+    private final Object sensorLock = new Object();
     private final float[] filteredSensor = new float[3];
+    private final float[] incomingGravity = new float[3];
     private final float[] screenGravity = new float[3];
+    private HandlerThread sensorThread;
+    private Handler sensorHandler;
+    private Choreographer choreographer;
     private FrameLayout container;
     private WebView webView;
     private SharedPreferences preferences;
+    private AppUpdater updater;
     private SensorManager sensorManager;
     private DisplayManager displayManager;
     private Sensor gravitySensor;
-    private boolean accelerometerFallback, resumed, webReady, sensorRegistered;
+    private boolean accelerometerFallback, orientationSensor, webReady, sensorRegistered;
+    private volatile boolean resumed;
     private boolean initializedSensor, gravityEvaluationInFlight;
-    private long previousSensorTime, lastDeliveryTime;
+    private boolean deliveryLoopRunning;
+    private long previousSensorTime, sampleSequence, lastDeliveredSequence = -1;
+    private long sensorSessionStartNs, nextDeliveryTime;
+    private int lastDeliveredRotation = -1, deliveryEpoch;
     private int rendererRecoveryCount;
     private int insetTop, insetRight, insetBottom, insetLeft;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         preferences = getSharedPreferences("pocket-state", MODE_PRIVATE);
+        updater = new AppUpdater(this, status -> evaluate(
+            "if(window.PocketNative&&PocketNative.onUpdateStatus)PocketNative.onUpdateStatus("
+            + status.toString() + ");"));
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
         displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
         if (sensorManager != null) {
-            gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY);
+            gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+            if (gravitySensor == null)
+                gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+            orientationSensor = gravitySensor != null;
+            if (gravitySensor == null)
+                gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY);
             if (gravitySensor == null) {
                 gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
                 accelerometerFallback = gravitySensor != null;
             }
         }
+        sensorThread = new HandlerThread("PocketMotion", Process.THREAD_PRIORITY_DISPLAY);
+        sensorThread.start();
+        sensorHandler = new Handler(sensorThread.getLooper());
+        choreographer = Choreographer.getInstance();
         container = new FrameLayout(this);
         container.setBackgroundColor(Color.rgb(233, 231, 226));
         container.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -129,6 +158,8 @@ public final class MainActivity extends Activity implements SensorEventListener,
     private void createWebView() {
         webReady = false;
         gravityEvaluationInFlight = false;
+        deliveryEpoch++;
+        lastDeliveredSequence = -1;
         WebView created = new WebView(this);
         webView = created;
         created.setBackgroundColor(Color.rgb(233, 231, 226));
@@ -241,23 +272,31 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
     @Override protected void onResume() {
         super.onResume();
+        if (updater != null) updater.onResume();
         resumed = true;
         if (webView != null) webView.onResume();
-        initializedSensor = false;
-        previousSensorTime = 0;
-        lastDeliveryTime = 0;
+        synchronized (sensorLock) {
+            initializedSensor = false;
+            previousSensorTime = 0;
+            sensorSessionStartNs = SystemClock.elapsedRealtimeNanos();
+        }
+        lastDeliveredSequence = -1;
+        nextDeliveryTime = 0;
         if (sensorManager != null && gravitySensor != null)
             sensorRegistered = sensorManager.registerListener(this, gravitySensor,
-                16_667, 0, mainHandler);
+                SENSOR_PERIOD_US, 0, sensorHandler);
+        startGravityDelivery();
         hideSystemBars();
         sendSensorStatus();
         sendVisibility();
     }
 
     @Override protected void onPause() {
+        if (updater != null) updater.onPause();
         resumed = false;
         if (sensorManager != null) sensorManager.unregisterListener(this);
         sensorRegistered = false;
+        stopGravityDelivery();
         sendVisibility();
         requestStateSave();
         if (webView != null) webView.onPause();
@@ -274,7 +313,11 @@ public final class MainActivity extends Activity implements SensorEventListener,
     }
 
     @Override protected void onDestroy() {
+        if (updater != null) updater.destroy();
+        resumed = false;
+        stopGravityDelivery();
         if (sensorManager != null) sensorManager.unregisterListener(this);
+        if (sensorThread != null) sensorThread.quitSafely();
         if (displayManager != null) displayManager.unregisterDisplayListener(this);
         mainHandler.removeCallbacksAndMessages(null);
         if (webView != null) {
@@ -306,11 +349,7 @@ public final class MainActivity extends Activity implements SensorEventListener,
         container.requestApplyInsets();
         sendInsets();
         evaluate("window.dispatchEvent(new Event('resize'));");
-        if (initializedSensor) {
-            GravityMapper.toScreen(filteredSensor[0], filteredSensor[1], filteredSensor[2],
-                currentRotation(), screenGravity);
-            sendGravity();
-        }
+        sendGravity();
     }
 
     private int currentRotation() {
@@ -319,35 +358,76 @@ public final class MainActivity extends Activity implements SensorEventListener,
     }
 
     @Override public void onSensorChanged(SensorEvent event) {
-        if (!resumed || event.values.length < 3) return;
+        if (!resumed || event.sensor != gravitySensor || event.values.length < 3) return;
         for (int i = 0; i < 3; i++) if (!Float.isFinite(event.values[i])) return;
-        if (!initializedSensor) {
-            System.arraycopy(event.values, 0, filteredSensor, 0, 3);
+        if (orientationSensor) {
+            if (!RotationGravity.toSensor(event.values, incomingGravity)) return;
+        } else System.arraycopy(event.values, 0, incomingGravity, 0, 3);
+        synchronized (sensorLock) {
+            // Reject stale callbacks crossing a pause/resume or delivered out of order.
+            if (!resumed || event.timestamp < sensorSessionStartNs
+                    || event.timestamp <= previousSensorTime) return;
+            if (!initializedSensor || !accelerometerFallback) {
+                System.arraycopy(incomingGravity, 0, filteredSensor, 0, 3);
+            } else {
+                float alpha = RotationGravity.accelerometerBlend(
+                    event.timestamp - previousSensorTime);
+                for (int i = 0; i < 3; i++)
+                    filteredSensor[i] += alpha * (incomingGravity[i] - filteredSensor[i]);
+            }
             initializedSensor = true;
-        } else if (accelerometerFallback) {
-            double dt = Math.min(0.1, Math.max(0.001,
-                (event.timestamp - previousSensorTime) / 1_000_000_000.0));
-            float alpha = (float) (1.0 - Math.exp(-dt / 0.18));
-            for (int i = 0; i < 3; i++)
-                filteredSensor[i] += alpha * (event.values[i] - filteredSensor[i]);
-        } else System.arraycopy(event.values, 0, filteredSensor, 0, 3);
-        previousSensorTime = event.timestamp;
-        GravityMapper.toScreen(filteredSensor[0], filteredSensor[1], filteredSensor[2],
-            currentRotation(), screenGravity);
-        if (event.timestamp - lastDeliveryTime >= DELIVERY_INTERVAL_NS) {
-            lastDeliveryTime = event.timestamp;
-            sendGravity();
+            previousSensorTime = event.timestamp;
+            sampleSequence++;
         }
+    }
+
+    private final Choreographer.FrameCallback gravityFrame = frameTimeNanos -> {
+        if (!deliveryLoopRunning || !resumed) return;
+        // Carry the deadline across 60/90/120Hz frames. Small clock rounding must not
+        // halve delivery cadence when a 60Hz interval is 16,666,666 rather than 667ns.
+        if (frameTimeNanos + FRAME_TIME_SLOP_NS >= nextDeliveryTime) {
+            sendGravity();
+            nextDeliveryTime += DELIVERY_INTERVAL_NS;
+            if (nextDeliveryTime + FRAME_TIME_SLOP_NS <= frameTimeNanos)
+                nextDeliveryTime = frameTimeNanos + DELIVERY_INTERVAL_NS;
+        }
+        if (deliveryLoopRunning) choreographer.postFrameCallback(this.gravityFrame);
+    };
+
+    private void startGravityDelivery() {
+        if (deliveryLoopRunning || choreographer == null) return;
+        deliveryLoopRunning = true;
+        choreographer.postFrameCallback(gravityFrame);
+    }
+    private void stopGravityDelivery() {
+        deliveryLoopRunning = false;
+        if (choreographer != null) choreographer.removeFrameCallback(gravityFrame);
+        gravityEvaluationInFlight = false;
+        deliveryEpoch++;
     }
 
     private void sendGravity() {
         if (!webReady || !resumed || webView == null || gravityEvaluationInFlight) return;
+        final int rotation = currentRotation();
+        final long sampleTime;
+        synchronized (sensorLock) {
+            if (!initializedSensor || (sampleSequence == lastDeliveredSequence
+                    && rotation == lastDeliveredRotation)) return;
+            GravityMapper.toScreen(filteredSensor[0], filteredSensor[1], filteredSensor[2],
+                rotation, screenGravity);
+            lastDeliveredSequence = sampleSequence;
+            sampleTime = previousSensorTime;
+        }
+        lastDeliveredRotation = rotation;
         final WebView target = webView;
+        final int epoch = deliveryEpoch;
         gravityEvaluationInFlight = true;
+        double ageMs = Math.max(0, (SystemClock.elapsedRealtimeNanos() - sampleTime) / 1_000_000.0);
         String js = "if(window.PocketNative&&PocketNative.onGravity)PocketNative.onGravity("
-            + screenGravity[0] + "," + screenGravity[1] + "," + screenGravity[2] + ");";
+            + screenGravity[0] + "," + screenGravity[1] + "," + screenGravity[2]
+            + "," + ageMs + ");";
         target.evaluateJavascript(js, ignored -> {
-            if (webView == target) gravityEvaluationInFlight = false;
+            if (webView == target && deliveryEpoch == epoch) gravityEvaluationInFlight = false;
         });
     }
     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }
@@ -387,11 +467,16 @@ public final class MainActivity extends Activity implements SensorEventListener,
             + resumed + ");");
     }
     private void sendSensorStatus() {
-        String mode = gravitySensor == null ? "unavailable"
-            : accelerometerFallback ? "accelerometer" : "gravity";
         evaluate("if(window.PocketNative&&PocketNative.onSensorStatus)PocketNative.onSensorStatus({"
             + "available:" + (gravitySensor != null) + ",active:" + sensorRegistered
-            + ",type:'" + mode + "'});");
+            + ",type:'" + sensorMode() + "',requestedHz:120});");
+    }
+    private String sensorMode() {
+        if (gravitySensor == null) return "unavailable";
+        if (gravitySensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR)
+            return "game_rotation_vector";
+        if (gravitySensor.getType() == Sensor.TYPE_ROTATION_VECTOR) return "rotation_vector";
+        return accelerometerFallback ? "accelerometer" : "gravity";
     }
     private void evaluate(String javascript) {
         if (webView != null && !isDestroyed()) webView.evaluateJavascript(javascript, null);
@@ -407,12 +492,16 @@ public final class MainActivity extends Activity implements SensorEventListener,
 
     /** Exposed only to bundled assets; document navigation is restricted above. */
     public final class NativeBridge {
+        @JavascriptInterface public void checkForUpdates() { updater.checkForUpdates(); }
+        @JavascriptInterface public void downloadUpdate() { updater.downloadUpdate(); }
+        @JavascriptInterface public void installUpdate() { updater.installUpdate(); }
         @JavascriptInterface public void ready() {
             mainHandler.post(() -> {
                 if (webView == null || isDestroyed()) return;
                 webReady = true;
+                if (updater != null) updater.onUiReady();
                 sendSensorStatus(); sendInsets(); sendVisibility();
-                if (initializedSensor) sendGravity();
+                sendGravity();
             });
         }
         @JavascriptInterface public void saveState(String json) {
@@ -429,13 +518,12 @@ public final class MainActivity extends Activity implements SensorEventListener,
             try {
                 return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
             } catch (android.content.pm.PackageManager.NameNotFoundException ignored) {
-                return "0.1.0";
+                return "0.1.1";
             }
         }
         @JavascriptInterface public boolean isSensorAvailable() { return gravitySensor != null; }
         @JavascriptInterface public String sensorType() {
-            return gravitySensor == null ? "unavailable"
-                : accelerometerFallback ? "accelerometer" : "gravity";
+            return sensorMode();
         }
     }
 }

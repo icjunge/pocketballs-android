@@ -42,9 +42,9 @@ shutil.copyfile(sys.argv[1],sys.argv[3])
 with ZipFile(sys.argv[3],'a',ZIP_DEFLATED) as z:
  for p in sorted(Path(sys.argv[2]).glob('*.dex')):z.write(p,p.name)
 PY
-"$build_tools/zipalign" -f -P 16 4 "$work_dir/unaligned.apk" "$output_dir/PocketBalls-0.1.0-aligned-unsigned.apk"
-"$build_tools/zipalign" -c -P 16 4 "$output_dir/PocketBalls-0.1.0-aligned-unsigned.apk"
-"$build_tools/aapt2" dump badging "$output_dir/PocketBalls-0.1.0-aligned-unsigned.apk" > "$output_dir/apk-badging.txt"
+"$build_tools/zipalign" -f -P 16 4 "$work_dir/unaligned.apk" "$output_dir/PocketBalls-0.1.1-aligned-unsigned.apk"
+"$build_tools/zipalign" -c -P 16 4 "$output_dir/PocketBalls-0.1.1-aligned-unsigned.apk"
+"$build_tools/aapt2" dump badging "$output_dir/PocketBalls-0.1.1-aligned-unsigned.apk" > "$output_dir/apk-badging.txt"
 cp "$build_tools/lib/apksigner.jar" "$output_dir/apksigner.jar"
 python3 - "$output_dir" <<'PY'
 from pathlib import Path

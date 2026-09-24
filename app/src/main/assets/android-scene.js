@@ -1,3 +1,31 @@
+/* Pure timing/input functions are shared with host-side motion validation.
+   Physics time follows real elapsed time independently from the 60 Hz render cap. */
+function createPocketFrameClock() {
+  const interval=1/60;
+  let last=null,lastRender=null,budget=0;
+  return {
+    reset(){last=null;lastRender=null;budget=0;},
+    tick(now){
+      if(last===null){last=lastRender=now;return {elapsed:0,render:true,renderElapsed:0};}
+      const raw=Math.max(0,(now-last)/1000);last=now;budget+=raw;
+      const render=budget+1e-6>=interval;
+      const renderElapsed=render?Math.max(0,(now-lastRender)/1000):0;
+      if(render){budget=Math.max(0,budget-Math.floor((budget+1e-6)/interval)*interval);lastRender=now;}
+      return {elapsed:Math.min(.2,raw),render,renderElapsed};
+    }
+  };
+}
+function pocketGravityInput(x,y,z) {
+  if(![x,y,z].every(Number.isFinite))return null;
+  const magnitude=Math.hypot(x,y,z);if(magnitude<.05||magnitude>40)return null;
+  const scale=1.63*Math.min(1,12/magnitude);
+  return {x:x*scale,y:y*scale,z:z*scale};
+}
+function advancePocketPhysics(dynamics,balls,gravity,elapsed) {
+  // The solver caps each call at100ms; short slices retain wall time at15/30fps.
+  let remaining=Math.min(.2,Math.max(0,elapsed));
+  while(remaining>1e-9){const dt=Math.min(.05,remaining);dynamics.step(balls,gravity,dt);remaining-=dt;}
+}
 /* Native coordinates: +X screen right, +Y screen up, +Z toward the viewer.
    AndroidPocket sends GRAVITY acceleration, already display-rotation remapped
    and sign-corrected: a phone lying face up must send (0, 0, -9.81). */
@@ -6,6 +34,7 @@
   const root=document.getElementById('pocket-android'),stage=root.querySelector('.ib-stage'),canvas=root.querySelector('canvas');
   const loading=root.querySelector('.ib-loading'),panel=root.querySelector('.ib-panel'),menu=root.querySelector('.ib-menu');
   const pause=root.querySelector('.ib-pause'),demo=root.querySelector('.ib-demo'),sensorStatus=root.querySelector('.ib-sensor');
+  const updateSection=root.querySelector('.ib-update'),updateButton=root.querySelector('.ib-update-button'),updateMessage=root.querySelector('.ib-update-message'),updateProgress=root.querySelector('.ib-update-progress');
   const bridge=window.AndroidPocket,hasNative=!!bridge,names=['soccer','tennis','basketball','volleyball'];
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
   function nativeCall(method,...args){try{return bridge&&typeof bridge[method]==='function'?bridge[method](...args):null;}catch(e){return null;}}
@@ -33,9 +62,11 @@
   gradient.addColorStop(0,'rgba(42,37,25,.40)');gradient.addColorStop(.35,'rgba(42,37,25,.22)');gradient.addColorStop(.72,'rgba(42,37,25,.07)');gradient.addColorStop(1,'rgba(42,37,25,0)');ctx.fillStyle=gradient;ctx.fillRect(0,0,128,128);
   const aoTex=new THREE.CanvasTexture(ac),shadowGeom=new THREE.PlaneGeometry(1,1),sphereGeom=new THREE.SphereGeometry(1,36,24);
   const balls=[];let innerW=9,innerH=19.5,halfW=4.5,halfH=9.75,baseRadius=0,effectiveRadius=0,dynamics=null,interior=null;
-  let selected='mixed',paused=false,isAuto=false,nativeActive=true,dragging=false,clock=0,last=0,raf=0;
+  let selected='mixed',paused=false,isAuto=false,nativeActive=true,dragging=false,clock=0,raf=0;
+  const frameClock=createPocketFrameClock();
+  let updateState='idle';
   let gravity={x:0,y:0,z:-16},targetGravity={x:0,y:0,z:-16},receivedSensor=false,sensorAvailable=hasNative;
-  let currentWidth=0,currentHeight=0,lastSaved=0,saveTimer=0,frameAverage=16.7,quality=1.5,slowFrames=0,qualityTimer=0;
+  let currentWidth=0,currentHeight=0,lastSaved=0,saveTimer=0,frameAverage=16.7,quality=1.5,slowTime=0,qualityTimer=0;
   const radiusFor=type=>(effectiveRadius||baseRadius)*(type==='tennis'?.75:1);
   function bounds(){return {width:innerW,height:innerH,depth};}
   function changeBoundaries(width,height){
@@ -108,20 +139,44 @@
       #include <colorspace_fragment>
       }`});postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),postMaterial));
   function glassView(){const ratio=camera.near/(camera.position.z-depth);camera.projectionMatrix.makePerspective((-halfW-camera.position.x)*ratio,(halfW-camera.position.x)*ratio,(halfH-camera.position.y)*ratio,(-halfH-camera.position.y)*ratio,camera.near,camera.far);camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();camera.updateMatrixWorld();}
-  function resizeRendering(){const pixels=currentWidth*currentHeight,cap=pixels>450000?Math.min(quality,1.5):Math.min(quality,1.75);renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,cap));renderer.setSize(currentWidth,currentHeight,false);const size=renderer.getDrawingBufferSize(new THREE.Vector2());renderTarget.setSize(size.x,size.y);postMaterial.uniforms.resolution.value.copy(size);postMaterial.uniforms.pixelRatio.value=renderer.getPixelRatio();}
+  function resizeRendering(){const pixels=currentWidth*currentHeight,cap=pixels>450000?Math.min(quality,1.25):Math.min(quality,1.5);renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,cap));renderer.setSize(currentWidth,currentHeight,false);const size=renderer.getDrawingBufferSize(new THREE.Vector2());renderTarget.setSize(size.x,size.y);postMaterial.uniforms.resolution.value.copy(size);postMaterial.uniforms.pixelRatio.value=renderer.getPixelRatio();}
   function resize(){const w=stage.clientWidth,h=stage.clientHeight;if(w<32||h<32||w===currentWidth&&h===currentHeight)return;const old=bounds();currentWidth=w;currentHeight=h;changeBoundaries(w,h);
     if(!baseRadius){baseRadius=clamp(Math.sqrt(.2*innerW*innerH/(16*Math.PI)),.5,.92);effectiveRadius=baseRadius;if(!loadState()){selected='mixed';paused=false;for(let i=0;i<16;i++)newBall(names[(i+Math.floor(i/4))%4]);fitBallRadii();packBalls();}}
-    else remapBalls(old);camera.aspect=w/h;resizeRendering();glassView();updateCount();updateSelection();setPaused(paused);last=0;scheduleSave();
+    else remapBalls(old);camera.aspect=w/h;resizeRendering();glassView();updateCount();updateSelection();setPaused(paused);frameClock.reset();scheduleSave();
   }
-  function openMenu(open){panel.hidden=!open;menu.setAttribute('aria-expanded',String(open));menu.setAttribute('aria-label',open?'收起控制面板':'打开控制面板');menu.querySelector('span').textContent=open?'×':'⋯';}
+  function openMenu(open){panel.hidden=!open;menu.setAttribute('aria-expanded',String(open));menu.setAttribute('aria-label',open?'收起控制面板':(menu.classList.contains('ib-update-available')?'打开控制面板，有可用更新':'打开控制面板'));menu.querySelector('span').textContent=open?'×':'⋯';}
   function setPaused(value){paused=value;pause.setAttribute('aria-pressed',String(value));pause.textContent=value?'继续':'暂停';pause.setAttribute('aria-label',value?'继续动画':'暂停动画');scheduleSave();}
   function updateSensorStatus(){sensorStatus.textContent=hasNative?(sensorAvailable?(receivedSensor?'倾斜手机 · 哪边低，小球往哪边滚':'正在连接动作传感器…'):'动作传感器暂不可用，可拖动画面测试'):(isAuto?'自动倾斜演示':'拖动画面，模拟手机倾斜');demo.hidden=hasNative&&sensorAvailable;}
   function setAuto(v){isAuto=!!v;demo.setAttribute('aria-pressed',String(isAuto));demo.textContent=isAuto?'停止演示':'自动演示';updateSensorStatus();}
+  function supportsUpdates(){return !!bridge&&['checkForUpdates','downloadUpdate','installUpdate'].every(method=>typeof bridge[method]==='function');}
+  function showUpdateStatus(info){
+    if(!info||typeof info!=='object'||!supportsUpdates())return;
+    const states=['idle','checking','available','latest','downloading','ready','permission','error'];
+    updateState=states.includes(info.state)?info.state:'idle';updateSection.hidden=false;
+    const labels={idle:'检查更新',checking:'正在检查…',available:'下载更新',latest:'检查更新',downloading:'正在下载…',ready:'安装更新',permission:'允许安装后继续',error:'重试检查'};
+    updateButton.textContent=labels[updateState];updateButton.disabled=info.busy===true||['checking','downloading'].includes(updateState);
+    const version=typeof info.versionName==='string'?info.versionName:'';
+    const defaults={idle:'',checking:'正在检查新版本',available:version?'发现新版本 '+version:'发现新版本',latest:'已是最新版本',downloading:'正在下载更新',ready:'下载完成，点击安装',permission:'需要允许球屿安装更新',error:'检查更新失败，请稍后重试'};
+    updateMessage.textContent=typeof info.message==='string'&&info.message?info.message:defaults[updateState];
+    updateMessage.hidden=!updateMessage.textContent;
+    updateProgress.hidden=updateState!=='downloading';
+    if(Number.isFinite(info.progress)&&info.progress>=0){updateProgress.value=clamp(info.progress,0,100);updateProgress.setAttribute('aria-label','更新下载进度 '+Math.round(updateProgress.value)+'%');}else updateProgress.removeAttribute('value');
+    const unread=updateState==='available'||updateState==='ready';menu.classList.toggle('ib-update-available',unread);
+    menu.setAttribute('aria-label',panel.hidden?(unread?'打开控制面板，有可用更新':'打开控制面板'):'收起控制面板');
+    if(typeof info.installedVersionName==='string')root.querySelector('.ib-version').textContent='球屿 · '+info.installedVersionName;
+  }
+  updateButton.addEventListener('click',()=>{
+    if(!supportsUpdates())return;
+    if(updateState==='available')nativeCall('downloadUpdate');
+    else if(updateState==='ready'||updateState==='permission')nativeCall('installUpdate');
+    else nativeCall('checkForUpdates');
+  });
   window.PocketNative={
-    onGravity(x,y,z){if(![x,y,z].every(Number.isFinite))return;const magnitude=Math.hypot(x,y,z);if(magnitude<.05||magnitude>40)return;const scale=1.63*Math.min(1,12/magnitude);targetGravity={x:x*scale,y:y*scale,z:z*scale};if(!receivedSensor){gravity={...targetGravity};receivedSensor=true;updateSensorStatus();}isAuto=false;},
+    onGravity(x,y,z){const next=pocketGravityInput(x,y,z);if(!next)return;targetGravity=next;gravity={...next};if(!receivedSensor){receivedSensor=true;updateSensorStatus();}isAuto=false;},
     onInsets(top,right,bottom,left){[top,right,bottom,left].forEach((n,i)=>document.documentElement.style.setProperty(['--inset-top','--inset-right','--inset-bottom','--inset-left'][i],Math.max(0,Number(n)||0)+'px'));},
     onSensorStatus(value,fallback){const info=typeof value==='object'&&value!==null?value:{available:value,type:fallback?'accelerometer':'gravity'};sensorAvailable=!!info.available;root.dataset.sensorFallback=String(info.type==='accelerometer');root.dataset.sensorType=info.type||'unavailable';updateSensorStatus();},
-    onVisibility(active){nativeActive=!!active;last=0;if(!nativeActive){saveState();cancelAnimationFrame(raf);raf=0;}else requestFrame();},
+    onVisibility(active){nativeActive=!!active;frameClock.reset();if(!nativeActive){saveState();cancelAnimationFrame(raf);raf=0;}else requestFrame();},
+    onUpdateStatus:showUpdateStatus,
     saveState,onSaveRequested:saveState,
     onBackPressed(){if(panel.hidden)return false;openMenu(false);return true;},
     closeMenu(){if(panel.hidden)return false;openMenu(false);return true;}
@@ -135,23 +190,30 @@
   stage.addEventListener('pointerdown',e=>{if(!panel.hidden){openMenu(false);return;}if(hasNative&&sensorAvailable)return;dragging=true;stage.setPointerCapture(e.pointerId);setAuto(false);dragGravity(e);});
   stage.addEventListener('pointermove',e=>{if(dragging)dragGravity(e);});stage.addEventListener('pointerup',()=>{dragging=false;});stage.addEventListener('pointercancel',()=>{dragging=false;});
   document.addEventListener('keydown',e=>{if(e.key==='Escape')openMenu(false);});
-  document.addEventListener('visibilitychange',()=>{last=0;if(document.hidden){saveState();cancelAnimationFrame(raf);raf=0;}else requestFrame();});window.addEventListener('pagehide',saveState);
+  document.addEventListener('visibilitychange',()=>{frameClock.reset();if(document.hidden){saveState();cancelAnimationFrame(raf);raf=0;}else requestFrame();});window.addEventListener('pagehide',saveState);
   canvas.addEventListener('webglcontextlost',e=>{e.preventDefault();saveState();loading.textContent='正在恢复 3D 画面…';loading.hidden=false;cancelAnimationFrame(raf);raf=0;});canvas.addEventListener('webglcontextrestored',()=>window.location.reload());
   function requestFrame(){if(!raf&&nativeActive&&!document.hidden)raf=requestAnimationFrame(frame);}
-  function frame(now){raf=0;if(!nativeActive||document.hidden)return;const rawElapsed=last?(now-last)/1000:0,dt=Math.min(.06,rawElapsed);last=now;
+  function frame(now){raf=0;if(!nativeActive||document.hidden)return;const timing=frameClock.tick(now),dt=timing.elapsed;
     if(isAuto){clock+=dt;const angle=Math.sin(clock*.30)*1.4;targetGravity={x:Math.sin(angle)*6.7,y:-Math.cos(angle)*5.4,z:0};targetGravity.z=-Math.sqrt(256-targetGravity.x**2-targetGravity.y**2);}
-    // Sensor buffers stay live when physics is paused or settings are open.
-    const blend=1-Math.exp(-dt*18);for(const axis of ['x','y','z'])gravity[axis]+=(targetGravity[axis]-gravity[axis])*blend;
-    if(!paused)dynamics.step(balls,gravity,dt);let meanZ=0;
+    // Native gravity is already sensor-fused: applying another low-pass adds lag.
+    // It remains live while paused and while settings are open.
+    if(hasNative&&receivedSensor)gravity={...targetGravity};
+    else {const blend=1-Math.exp(-dt/.018);for(const axis of ['x','y','z'])gravity[axis]+=(targetGravity[axis]-gravity[axis])*blend;}
+    if(!paused)advancePocketPhysics(dynamics,balls,gravity,dt);
+    // A120Hz display still simulates120Hz, but GPU work is limited to60 draws/s.
+    if(!timing.render){requestFrame();return;}
+    const drawDt=Math.min(.2,timing.renderElapsed);let meanZ=0;
     for(const b of balls){unitScale.setScalar(b.r);b.mesh.matrix.compose(zero,b.mesh.quaternion,unitScale);const s=clamp(b.squash||0,0,.045),n=b.squashAxis||zAxis;normalAxis.set(n.x,n.y,n.z).normalize();if(normalAxis.lengthSq()<.5)normalAxis.copy(zAxis);axisQuat.setFromUnitVectors(zAxis,normalAxis);orient.makeRotationFromQuaternion(axisQuat);stretch.makeScale(1/Math.sqrt(1-s),1/Math.sqrt(1-s),1-s);invOrient.copy(orient).invert();deform.copy(orient).multiply(stretch).multiply(invOrient);b.mesh.matrix.premultiply(deform);b.mesh.matrix.setPosition(b.x,b.y,b.z);b.mesh.matrixWorldNeedsUpdate=true;
       const height=Math.max(0,b.z-b.r),sh=b.r*3+height*.65;b.shade.position.set(b.x+.06,b.y-.10,.013);b.shade.scale.set(sh,sh,1);b.shade.material.opacity=.82/(1+height*1.9);meanZ+=b.z;}
-    if(panel.hidden){const length=Math.max(1,Math.hypot(gravity.x,gravity.y,gravity.z)),cb=1-Math.exp(-dt*7);camera.position.x+=(1.3+gravity.x/length*6.2-camera.position.x)*cb;camera.position.y+=(1+gravity.y/length*5.2-camera.position.y)*cb;}
-    glassView();postMaterial.uniforms.focus.value+=(camera.position.z-meanZ/Math.max(1,balls.length)-.3-postMaterial.uniforms.focus.value)*(1-Math.exp(-dt*3));renderer.setRenderTarget(renderTarget);renderer.render(scene,camera);renderer.setRenderTarget(null);renderer.render(postScene,postCamera);
-    if(rawElapsed>0&&rawElapsed<.25){frameAverage=frameAverage*.97+rawElapsed*1000*.03;slowFrames=frameAverage>27?slowFrames+1:Math.max(0,slowFrames-1);if(slowFrames>90&&now-qualityTimer>7000&&quality>1){quality=Math.max(1,quality-.25);postMaterial.uniforms.dof.value=quality<=1?0:1;resizeRendering();qualityTimer=now;slowFrames=0;}}
+    if(panel.hidden){const length=Math.max(1,Math.hypot(gravity.x,gravity.y,gravity.z)),cb=1-Math.exp(-drawDt*7);camera.position.x+=(1.3+gravity.x/length*6.2-camera.position.x)*cb;camera.position.y+=(1+gravity.y/length*5.2-camera.position.y)*cb;}
+    glassView();postMaterial.uniforms.focus.value+=(camera.position.z-meanZ/Math.max(1,balls.length)-.3-postMaterial.uniforms.focus.value)*(1-Math.exp(-drawDt*3));
+    if(postMaterial.uniforms.dof.value>0){renderer.setRenderTarget(renderTarget);renderer.render(scene,camera);renderer.setRenderTarget(null);renderer.render(postScene,postCamera);}
+    else {renderer.setRenderTarget(null);renderer.render(scene,camera);}
+    if(timing.renderElapsed>0&&timing.renderElapsed<.25){frameAverage=frameAverage*.9+timing.renderElapsed*1000*.1;slowTime=frameAverage>24?slowTime+timing.renderElapsed:Math.max(0,slowTime-timing.renderElapsed);if(slowTime>.65&&now-qualityTimer>1500){if(postMaterial.uniforms.dof.value>0)postMaterial.uniforms.dof.value=0;else if(quality>1){quality=Math.max(1,quality-.25);resizeRendering();}qualityTimer=now;slowTime=0;}}
     if(now-lastSaved>1200)saveState();requestFrame();
   }
   resize();new ResizeObserver(resize).observe(stage);window.addEventListener('resize',resize);if(window.visualViewport)window.visualViewport.addEventListener('resize',resize);
-  root.querySelector('.ib-version').textContent=hasNative?'球屿 · '+(nativeCall('versionName')||'0.1.0'):'球屿 · 浏览器预览';updateSensorStatus();loading.hidden=true;
-  root.__idleTest={balls,renderer,scene,camera,postMaterial,setPaused,setGravity:(x,y,z=-Math.sqrt(Math.max(0,256-x*x-y*y)))=>{targetGravity={x,y,z};gravity={x,y,z};isAuto=false;},physics:dt=>dynamics.step(balls,gravity,dt),get dynamics(){return dynamics;},get interior(){return interior;},saveState,serialize,resize,getState:()=>({selected,paused,isAuto,count:balls.length,radius:baseRadius,effectiveRadius,bounds:bounds(),occupancy:balls.reduce((s,b)=>s+Math.PI*b.r*b.r,0)/(innerW*innerH),gravity:{...gravity},targetGravity:{...targetGravity},menuOpen:!panel.hidden,sensorAvailable,receivedSensor,dpr:renderer.getPixelRatio(),fps:1000/frameAverage})};
+  root.querySelector('.ib-version').textContent=hasNative?'球屿 · '+(nativeCall('versionName')||'0.1.1'):'球屿 · 浏览器预览';updateSensorStatus();updateSection.hidden=!supportsUpdates();loading.hidden=true;
+  root.__idleTest={balls,renderer,scene,camera,postMaterial,setPaused,setGravity:(x,y,z=-Math.sqrt(Math.max(0,256-x*x-y*y)))=>{targetGravity={x,y,z};gravity={x,y,z};isAuto=false;},physics:dt=>dynamics.step(balls,gravity,dt),get dynamics(){return dynamics;},get interior(){return interior;},saveState,serialize,resize,getState:()=>({selected,paused,isAuto,count:balls.length,radius:baseRadius,effectiveRadius,bounds:bounds(),occupancy:balls.reduce((s,b)=>s+Math.PI*b.r*b.r,0)/(innerW*innerH),gravity:{...gravity},targetGravity:{...targetGravity},menuOpen:!panel.hidden,sensorAvailable,receivedSensor,dpr:renderer.getPixelRatio(),fps:1000/frameAverage,updateState})};
   nativeCall('ready');requestFrame();
 })();

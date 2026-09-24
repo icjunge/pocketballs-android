@@ -10,7 +10,7 @@
       </div>
       <div class="ib-quantity-row"><span class="ib-label">数量</span><div class="ib-count" role="group" aria-label="调整小球数量"><button type="button" class="ib-less" aria-label="减少一个球">−</button><output aria-live="polite">16 颗</output><button type="button" class="ib-more" aria-label="增加一个球">＋</button></div></div>
       <div class="ib-actions"><button type="button" class="ib-reset">重新摆放</button><button type="button" class="ib-pause" aria-pressed="false">暂停</button></div>
-      <button type="button" class="ib-demo" aria-pressed="false" hidden>自动演示</button><p class="ib-sensor" role="status">倾斜手机，让小球滚起来</p><p class="ib-version"></p>
+      <button type="button" class="ib-demo" aria-pressed="false" hidden>自动演示</button><p class="ib-sensor" role="status">倾斜手机，让小球滚起来</p><section class="ib-update" aria-label="应用更新" hidden><button type="button" class="ib-update-button">检查更新</button><progress class="ib-update-progress" max="100" hidden></progress><p class="ib-update-message" role="status" hidden></p></section><p class="ib-version"></p>
     </section>
   </main>
 </div>
@@ -29,6 +29,7 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#f1eee7;ove
 #pocket-android button:focus-visible{outline:2px solid #537c78;outline-offset:3px}
 #pocket-android .ib-menu{position:absolute;z-index:4;top:calc(var(--inset-top) + 14px);right:calc(var(--inset-right) + 16px);width:48px;height:48px;display:grid;place-items:center;border-radius:50%;border:1px solid rgba(255,255,255,.7);background:rgba(249,252,255,.32);-webkit-backdrop-filter:blur(20px) saturate(140%);backdrop-filter:blur(20px) saturate(140%);box-shadow:0 3px 15px rgba(34,49,57,.1),inset 0 1px 0 rgba(255,255,255,.35)}
 #pocket-android .ib-menu span{display:block;font-size:28px;line-height:1;letter-spacing:1px;margin-top:-6px}
+#pocket-android .ib-menu.ib-update-available::after{content:"";position:absolute;right:5px;top:5px;width:7px;height:7px;border-radius:50%;background:#558982;box-shadow:0 0 0 2px rgba(250,253,252,.9)}
 #pocket-android .ib-menu:active{transform:scale(.94)}
 #pocket-android .ib-menu[aria-expanded="true"]{background:rgba(255,255,255,.7)}
 #pocket-android .ib-panel{position:absolute;z-index:3;top:calc(var(--inset-top) + 74px);right:calc(var(--inset-right) + 14px);width:min(352px,calc(100% - var(--inset-left) - var(--inset-right) - 28px));max-height:calc(100% - var(--inset-top) - var(--inset-bottom) - 88px);overflow:auto;overscroll-behavior:contain;padding:13px;border-radius:27px;border:1px solid rgba(255,255,255,.7);background:rgba(248,252,255,.56);-webkit-backdrop-filter:blur(26px) saturate(150%);backdrop-filter:blur(26px) saturate(150%);box-shadow:0 16px 42px rgba(27,45,53,.15),inset 0 1px 0 rgba(255,255,255,.4);transform-origin:calc(100% - 25px) 0;animation:ib-panel-in .18s ease both}
@@ -50,6 +51,12 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#f1eee7;ove
 #pocket-android .ib-demo[aria-pressed="true"]{background:rgba(126,168,157,.28)}
 #pocket-android .ib-actions button:active,#pocket-android .ib-count button:active{background:rgba(255,255,255,.75)}
 #pocket-android .ib-sensor{font-size:11px;line-height:1.5;text-align:center;color:#60717d;margin:13px 2px 3px}
+#pocket-android .ib-update{margin-top:11px;padding-top:10px;border-top:1px solid rgba(43,62,72,.11)}
+#pocket-android .ib-update-button{width:100%;min-height:44px;padding:8px 10px;border-radius:16px;font-size:12px;background:rgba(255,255,255,.38)}
+#pocket-android .ib-update-message{margin:6px 3px 1px;font-size:11px;line-height:1.5;text-align:center;color:#60717d;overflow-wrap:anywhere}
+#pocket-android .ib-update-progress{display:block;width:calc(100% - 12px);height:4px;margin:9px 6px 3px;border:0;border-radius:3px;accent-color:#558982}
+#pocket-android .ib-update-progress::-webkit-progress-bar{background:rgba(83,124,120,.12);border-radius:3px}
+#pocket-android .ib-update-progress::-webkit-progress-value{background:#558982;border-radius:3px}
 #pocket-android .ib-version{font-size:10px;text-align:center;color:#78858e;margin:4px 0 1px}
 #pocket-android button:disabled{opacity:.35;cursor:default}
 @keyframes ib-panel-in{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
