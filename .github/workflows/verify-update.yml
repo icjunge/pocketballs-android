@@ -1,0 +1,27 @@
+name: Verify public app update
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'updates/**'
+      - 'releases/**'
+      - 'tools/verify-update.py'
+      - '.github/workflows/verify-update.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-public-update
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify local metadata and anonymous public downloads
+        run: python3 tools/verify-update.py --remote

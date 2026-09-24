@@ -1,0 +1,10 @@
+{
+  "versionCode": 2,
+  "versionName": "0.1.1",
+  "packageName": "com.idleballs.pocket",
+  "minSdk": 26,
+  "url": "https://raw.githubusercontent.com/icjunge/pocketballs-android/main/releases/v0.1.1/PocketBalls-0.1.1-Fold7.apk",
+  "sha256": "ccd3125ad83de9eda46ce1429e52e8a01a15e538109193b3f9fd8c3ed792990a",
+  "sizeBytes": 226120,
+  "notes": "改善倾斜跟手性：融合陀螺仪姿态、独立传感器线程、移除重复平滑；修复低帧率下物理变慢，降低内屏渲染负担。加入应用内检查更新、下载及系统确认安装。"
+}

@@ -25,7 +25,7 @@ GitHub Actions 生成 `PocketBalls-build-input`，其中 APK **尚未签名，�
 
 ## 更新发布
 
-已签名安装包放在 `releases/v<版本>/PocketBalls-<版本>-Fold7.apk`，`updates/latest.json` 指向最新版本并包含版本号、包名、最低系统版本、字节数及 SHA-256。先完成构建、签名和验证，再将安装包与更新清单在同一个提交中发布。`Verify published update` 工作流验证本地文件与公网下载地址。
+已签名安装包放在 `releases/v<版本>/PocketBalls-<版本>-Fold7.apk`，`updates/latest.json` 指向最新版本并包含版本号、包名、最低系统版本、字节数及 SHA-256。先完成构建、签名和验证，再将安装包与更新清单在同一个提交中发布。`Verify public app update` 工作流验证本地文件与公网下载地址。
 
 应用仅接受此仓库的 HTTPS 更新地址，并在安装前再次核对文件大小、SHA-256、包名、版本和与当前应用相同的签名。安装包保存在应用私有目录，通过只读 ContentProvider 授权系统安装器读取。
 
